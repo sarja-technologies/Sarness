@@ -1,0 +1,962 @@
+{
+ "protocol": "SNP/1",
+ "ops": [
+  {
+   "op": "chat.conversation.list",
+   "method": "GET",
+   "route": "/v1/chat/conversations",
+   "handler": "api.chat:list_conversations",
+   "mode": "unary",
+   "params": [
+    "q",
+    "project_id"
+   ]
+  },
+  {
+   "op": "chat.conversation.create",
+   "method": "POST",
+   "route": "/v1/chat/conversations",
+   "handler": "api.chat:create_conversation",
+   "mode": "unary",
+   "params": [
+    "body"
+   ]
+  },
+  {
+   "op": "chat.conversation.get",
+   "method": "GET",
+   "route": "/v1/chat/conversations/{cid}",
+   "handler": "api.chat:get_conversation",
+   "mode": "unary",
+   "params": [
+    "cid"
+   ]
+  },
+  {
+   "op": "chat.conversation.update",
+   "method": "PATCH",
+   "route": "/v1/chat/conversations/{cid}",
+   "handler": "api.chat:update_conversation",
+   "mode": "unary",
+   "params": [
+    "cid",
+    "body"
+   ]
+  },
+  {
+   "op": "chat.conversation.delete",
+   "method": "DELETE",
+   "route": "/v1/chat/conversations/{cid}",
+   "handler": "api.chat:delete_conversation",
+   "mode": "unary",
+   "params": [
+    "cid"
+   ]
+  },
+  {
+   "op": "chat.message.delete",
+   "method": "DELETE",
+   "route": "/v1/chat/conversations/{cid}/messages/{mid}",
+   "handler": "api.chat:delete_branch",
+   "mode": "unary",
+   "params": [
+    "cid",
+    "mid"
+   ]
+  },
+  {
+   "op": "chat.generate",
+   "method": "POST",
+   "route": "/v1/chat/conversations/{cid}/generate",
+   "handler": "api.chat:generate",
+   "mode": "stream",
+   "params": [
+    "cid",
+    "body"
+   ]
+  },
+  {
+   "op": "chat.stop",
+   "method": "POST",
+   "route": "/v1/chat/conversations/{cid}/stop",
+   "handler": "api.chat:stop",
+   "mode": "unary",
+   "params": [
+    "cid"
+   ]
+  },
+  {
+   "op": "chat.conversation.export",
+   "method": "GET",
+   "route": "/v1/chat/conversations/{cid}/export",
+   "handler": "api.chat:export",
+   "mode": "unary",
+   "params": [
+    "cid",
+    "format"
+   ]
+  },
+  {
+   "op": "chat.conversation.import",
+   "method": "POST",
+   "route": "/v1/chat/import",
+   "handler": "api.chat:import_conversation",
+   "mode": "unary",
+   "params": [
+    "body"
+   ]
+  },
+  {
+   "op": "agent.models",
+   "method": "GET",
+   "route": "/v1/agent/models",
+   "handler": "api.chat:agent_models",
+   "mode": "unary",
+   "params": []
+  },
+  {
+   "op": "agent.completion",
+   "method": "POST",
+   "route": "/v1/agent/completions",
+   "handler": "api.chat:agent_completions",
+   "mode": "stream",
+   "params": [
+    "body"
+   ]
+  },
+  {
+   "op": "job.submit",
+   "method": "POST",
+   "route": "/v1/jobs",
+   "handler": "api.jobs:submit_job",
+   "mode": "unary",
+   "params": [
+    "body"
+   ]
+  },
+  {
+   "op": "job.list",
+   "method": "GET",
+   "route": "/v1/jobs",
+   "handler": "api.jobs:list_jobs",
+   "mode": "unary",
+   "params": [
+    "status",
+    "kind",
+    "limit"
+   ]
+  },
+  {
+   "op": "job.get",
+   "method": "GET",
+   "route": "/v1/jobs/{job_id}",
+   "handler": "api.jobs:get_job",
+   "mode": "unary",
+   "params": [
+    "job_id"
+   ]
+  },
+  {
+   "op": "job.cancel",
+   "method": "POST",
+   "route": "/v1/jobs/{job_id}/cancel",
+   "handler": "api.jobs:cancel_job",
+   "mode": "unary",
+   "params": [
+    "job_id"
+   ]
+  },
+  {
+   "op": "job.retry",
+   "method": "POST",
+   "route": "/v1/jobs/{job_id}/retry",
+   "handler": "api.jobs:retry_job",
+   "mode": "unary",
+   "params": [
+    "job_id",
+    "body"
+   ]
+  },
+  {
+   "op": "job.clear_finished",
+   "method": "DELETE",
+   "route": "/v1/jobs/finished",
+   "handler": "api.jobs:clear_finished",
+   "mode": "unary",
+   "params": []
+  },
+  {
+   "op": "workflow.nodes",
+   "method": "GET",
+   "route": "/v1/nodes",
+   "handler": "api.jobs:nodes",
+   "mode": "unary",
+   "params": []
+  },
+  {
+   "op": "workflow.validate",
+   "method": "POST",
+   "route": "/v1/workflows/validate",
+   "handler": "api.jobs:validate",
+   "mode": "unary",
+   "params": [
+    "body"
+   ]
+  },
+  {
+   "op": "workflow.compile",
+   "method": "POST",
+   "route": "/v1/workflows/compile",
+   "handler": "api.jobs:compile_simple",
+   "mode": "unary",
+   "params": [
+    "body"
+   ]
+  },
+  {
+   "op": "workflow.simplify",
+   "method": "POST",
+   "route": "/v1/workflows/simplify",
+   "handler": "api.jobs:simplify",
+   "mode": "unary",
+   "params": [
+    "body"
+   ]
+  },
+  {
+   "op": "workflow.list",
+   "method": "GET",
+   "route": "/v1/workflows",
+   "handler": "api.jobs:list_workflows",
+   "mode": "unary",
+   "params": [
+    "kind",
+    "presets"
+   ]
+  },
+  {
+   "op": "workflow.create",
+   "method": "POST",
+   "route": "/v1/workflows",
+   "handler": "api.jobs:save_workflow",
+   "mode": "unary",
+   "params": [
+    "body"
+   ]
+  },
+  {
+   "op": "workflow.get",
+   "method": "GET",
+   "route": "/v1/workflows/{wid}",
+   "handler": "api.jobs:get_workflow",
+   "mode": "unary",
+   "params": [
+    "wid"
+   ]
+  },
+  {
+   "op": "workflow.update",
+   "method": "PUT",
+   "route": "/v1/workflows/{wid}",
+   "handler": "api.jobs:update_workflow",
+   "mode": "unary",
+   "params": [
+    "wid",
+    "body"
+   ]
+  },
+  {
+   "op": "workflow.delete",
+   "method": "DELETE",
+   "route": "/v1/workflows/{wid}",
+   "handler": "api.jobs:delete_workflow",
+   "mode": "unary",
+   "params": [
+    "wid"
+   ]
+  },
+  {
+   "op": "project.list",
+   "method": "GET",
+   "route": "/v1/projects",
+   "handler": "api.library:list_projects",
+   "mode": "unary",
+   "params": []
+  },
+  {
+   "op": "project.create",
+   "method": "POST",
+   "route": "/v1/projects",
+   "handler": "api.library:create_project",
+   "mode": "unary",
+   "params": [
+    "body"
+   ]
+  },
+  {
+   "op": "project.update",
+   "method": "PATCH",
+   "route": "/v1/projects/{pid}",
+   "handler": "api.library:update_project",
+   "mode": "unary",
+   "params": [
+    "pid",
+    "body"
+   ]
+  },
+  {
+   "op": "project.delete",
+   "method": "DELETE",
+   "route": "/v1/projects/{pid}",
+   "handler": "api.library:delete_project",
+   "mode": "unary",
+   "params": [
+    "pid"
+   ]
+  },
+  {
+   "op": "folder.create",
+   "method": "POST",
+   "route": "/v1/folders",
+   "handler": "api.library:create_folder",
+   "mode": "unary",
+   "params": [
+    "body"
+   ]
+  },
+  {
+   "op": "folder.update",
+   "method": "PATCH",
+   "route": "/v1/folders/{fid}",
+   "handler": "api.library:update_folder",
+   "mode": "unary",
+   "params": [
+    "fid",
+    "body"
+   ]
+  },
+  {
+   "op": "folder.delete",
+   "method": "DELETE",
+   "route": "/v1/folders/{fid}",
+   "handler": "api.library:delete_folder",
+   "mode": "unary",
+   "params": [
+    "fid"
+   ]
+  },
+  {
+   "op": "generation.list",
+   "method": "GET",
+   "route": "/v1/generations",
+   "handler": "api.library:list_generations",
+   "mode": "unary",
+   "params": [
+    "type",
+    "project_id",
+    "folder_id",
+    "q",
+    "model_id",
+    "favorite",
+    "tag",
+    "collection_id",
+    "since",
+    "until",
+    "before",
+    "limit",
+    "trash",
+    "job_id"
+   ]
+  },
+  {
+   "op": "generation.get",
+   "method": "GET",
+   "route": "/v1/generations/{gid}",
+   "handler": "api.library:get_generation",
+   "mode": "unary",
+   "params": [
+    "gid"
+   ]
+  },
+  {
+   "op": "generation.update",
+   "method": "PATCH",
+   "route": "/v1/generations/{gid}",
+   "handler": "api.library:update_generation",
+   "mode": "unary",
+   "params": [
+    "gid",
+    "body"
+   ]
+  },
+  {
+   "op": "generation.bulk",
+   "method": "POST",
+   "route": "/v1/generations/bulk",
+   "handler": "api.library:bulk_generations",
+   "mode": "unary",
+   "params": [
+    "body"
+   ]
+  },
+  {
+   "op": "generation.delete",
+   "method": "DELETE",
+   "route": "/v1/generations/{gid}",
+   "handler": "api.library:delete_generation",
+   "mode": "unary",
+   "params": [
+    "gid",
+    "permanent"
+   ]
+  },
+  {
+   "op": "generation.rerun",
+   "method": "POST",
+   "route": "/v1/generations/{gid}/rerun",
+   "handler": "api.library:rerun_generation",
+   "mode": "unary",
+   "params": [
+    "gid",
+    "body"
+   ]
+  },
+  {
+   "op": "generation.metadata",
+   "method": "GET",
+   "route": "/v1/generations/{gid}/metadata",
+   "handler": "api.library:generation_metadata",
+   "mode": "unary",
+   "params": [
+    "gid"
+   ]
+  },
+  {
+   "op": "tag.list",
+   "method": "GET",
+   "route": "/v1/tags",
+   "handler": "api.library:list_tags",
+   "mode": "unary",
+   "params": []
+  },
+  {
+   "op": "library.models",
+   "method": "GET",
+   "route": "/v1/library/models",
+   "handler": "api.library:library_models",
+   "mode": "unary",
+   "params": []
+  },
+  {
+   "op": "collection.list",
+   "method": "GET",
+   "route": "/v1/collections",
+   "handler": "api.library:list_collections",
+   "mode": "unary",
+   "params": []
+  },
+  {
+   "op": "collection.create",
+   "method": "POST",
+   "route": "/v1/collections",
+   "handler": "api.library:create_collection",
+   "mode": "unary",
+   "params": [
+    "body"
+   ]
+  },
+  {
+   "op": "collection.rename",
+   "method": "PATCH",
+   "route": "/v1/collections/{cid}",
+   "handler": "api.library:rename_collection",
+   "mode": "unary",
+   "params": [
+    "cid",
+    "body"
+   ]
+  },
+  {
+   "op": "collection.delete",
+   "method": "DELETE",
+   "route": "/v1/collections/{cid}",
+   "handler": "api.library:delete_collection",
+   "mode": "unary",
+   "params": [
+    "cid"
+   ]
+  },
+  {
+   "op": "collection.add_items",
+   "method": "POST",
+   "route": "/v1/collections/{cid}/items",
+   "handler": "api.library:add_items",
+   "mode": "unary",
+   "params": [
+    "cid",
+    "body"
+   ]
+  },
+  {
+   "op": "collection.remove_item",
+   "method": "DELETE",
+   "route": "/v1/collections/{cid}/items/{gid}",
+   "handler": "api.library:remove_item",
+   "mode": "unary",
+   "params": [
+    "cid",
+    "gid"
+   ]
+  },
+  {
+   "op": "file.get",
+   "method": "GET",
+   "route": "/v1/files/{fid}",
+   "handler": "api.library:get_file",
+   "mode": "download",
+   "params": [
+    "fid",
+    "exp",
+    "sig"
+   ]
+  },
+  {
+   "op": "file.sign",
+   "method": "POST",
+   "route": "/v1/files/{fid}/sign",
+   "handler": "api.library:sign_file",
+   "mode": "unary",
+   "params": [
+    "fid"
+   ]
+  },
+  {
+   "op": "file.upload",
+   "method": "POST",
+   "route": "/v1/uploads",
+   "handler": "api.library:upload",
+   "mode": "upload",
+   "params": []
+  },
+  {
+   "op": "model.list",
+   "method": "GET",
+   "route": "/v1/models",
+   "handler": "api.models:installed",
+   "mode": "unary",
+   "params": [
+    "category"
+   ]
+  },
+  {
+   "op": "model.rescan",
+   "method": "POST",
+   "route": "/v1/models/rescan",
+   "handler": "api.models:rescan",
+   "mode": "unary",
+   "params": []
+  },
+  {
+   "op": "model.delete",
+   "method": "DELETE",
+   "route": "/v1/models/{model_id:path}",
+   "handler": "api.models:delete_model",
+   "mode": "unary",
+   "params": [
+    "model_id"
+   ]
+  },
+  {
+   "op": "model.catalog",
+   "method": "GET",
+   "route": "/v1/models/catalog",
+   "handler": "api.models:catalog",
+   "mode": "unary",
+   "params": []
+  },
+  {
+   "op": "model.presets",
+   "method": "GET",
+   "route": "/v1/models/presets",
+   "handler": "api.models:presets",
+   "mode": "unary",
+   "params": []
+  },
+  {
+   "op": "model.disk",
+   "method": "GET",
+   "route": "/v1/models/disk",
+   "handler": "api.models:disk",
+   "mode": "unary",
+   "params": []
+  },
+  {
+   "op": "model.install",
+   "method": "POST",
+   "route": "/v1/models/install",
+   "handler": "api.models:install",
+   "mode": "unary",
+   "params": [
+    "body"
+   ]
+  },
+  {
+   "op": "download.list",
+   "method": "GET",
+   "route": "/v1/downloads",
+   "handler": "api.models:downloads",
+   "mode": "unary",
+   "params": []
+  },
+  {
+   "op": "download.action",
+   "method": "POST",
+   "route": "/v1/downloads/{did}/{action}",
+   "handler": "api.models:download_action",
+   "mode": "unary",
+   "params": [
+    "did",
+    "action"
+   ]
+  },
+  {
+   "op": "hf.search",
+   "method": "GET",
+   "route": "/v1/hf/search",
+   "handler": "api.models:hf_search",
+   "mode": "unary",
+   "params": [
+    "q",
+    "kind"
+   ]
+  },
+  {
+   "op": "hf.inspect",
+   "method": "GET",
+   "route": "/v1/hf/inspect",
+   "handler": "api.models:hf_inspect",
+   "mode": "unary",
+   "params": [
+    "repo"
+   ]
+  },
+  {
+   "op": "system.health",
+   "method": "GET",
+   "route": "/v1/health",
+   "handler": "api.system:health",
+   "mode": "unary",
+   "params": []
+  },
+  {
+   "op": "system.info",
+   "method": "GET",
+   "route": "/v1/system",
+   "handler": "api.system:system",
+   "mode": "unary",
+   "params": []
+  },
+  {
+   "op": "settings.get",
+   "method": "GET",
+   "route": "/v1/settings",
+   "handler": "api.system:get_settings",
+   "mode": "unary",
+   "params": []
+  },
+  {
+   "op": "settings.patch",
+   "method": "PATCH",
+   "route": "/v1/settings",
+   "handler": "api.system:patch_settings",
+   "mode": "unary",
+   "params": [
+    "patch"
+   ]
+  },
+  {
+   "op": "gateway.status",
+   "method": "GET",
+   "route": "/v1/gateway",
+   "handler": "api.system:gateway_status",
+   "mode": "unary",
+   "params": []
+  },
+  {
+   "op": "gateway.refresh",
+   "method": "POST",
+   "route": "/v1/gateway/refresh",
+   "handler": "api.system:gateway_refresh",
+   "mode": "unary",
+   "params": []
+  },
+  {
+   "op": "runtime.list",
+   "method": "GET",
+   "route": "/v1/runtimes",
+   "handler": "api.system:runtimes",
+   "mode": "unary",
+   "params": []
+  },
+  {
+   "op": "runtime.llama.install",
+   "method": "POST",
+   "route": "/v1/runtimes/llama/install",
+   "handler": "api.system:install_llama",
+   "mode": "unary",
+   "params": [
+    "body"
+   ]
+  },
+  {
+   "op": "worker.release",
+   "method": "POST",
+   "route": "/v1/worker/release",
+   "handler": "api.system:worker_release",
+   "mode": "unary",
+   "params": []
+  },
+  {
+   "op": "worker.stop",
+   "method": "POST",
+   "route": "/v1/worker/stop",
+   "handler": "api.system:worker_stop",
+   "mode": "unary",
+   "params": []
+  },
+  {
+   "op": "llm.status",
+   "method": "GET",
+   "route": "/v1/llm/status",
+   "handler": "api.system:llm_status",
+   "mode": "unary",
+   "params": []
+  },
+  {
+   "op": "llm.models",
+   "method": "GET",
+   "route": "/v1/llm/models",
+   "handler": "api.system:llm_models",
+   "mode": "unary",
+   "params": []
+  },
+  {
+   "op": "llm.load",
+   "method": "POST",
+   "route": "/v1/llm/load",
+   "handler": "api.system:llm_load",
+   "mode": "unary",
+   "params": [
+    "body"
+   ]
+  },
+  {
+   "op": "llm.unload",
+   "method": "POST",
+   "route": "/v1/llm/unload",
+   "handler": "api.system:llm_unload",
+   "mode": "unary",
+   "params": []
+  },
+  {
+   "op": "llm.endpoint.refresh",
+   "method": "POST",
+   "route": "/v1/llm/endpoints/{endpoint_id}/refresh",
+   "handler": "api.system:refresh_endpoint",
+   "mode": "unary",
+   "params": [
+    "endpoint_id"
+   ]
+  },
+  {
+   "op": "event.subscribe",
+   "method": "GET",
+   "route": "/v1/events",
+   "handler": "api.ws:events",
+   "mode": "subscribe",
+   "params": []
+  },
+  {
+   "op": "experiment.list",
+   "method": "GET",
+   "route": "/v1/experiments",
+   "handler": "experiments.api:list_experiments",
+   "mode": "unary",
+   "params": []
+  },
+  {
+   "op": "experiment.get",
+   "method": "GET",
+   "route": "/v1/experiments/{eid}",
+   "handler": "experiments.api:get_experiment",
+   "mode": "unary",
+   "params": [
+    "eid"
+   ]
+  },
+  {
+   "op": "experiment.document.list",
+   "method": "GET",
+   "route": "/v1/experiments/{eid}/documents",
+   "handler": "experiments.api:list_documents",
+   "mode": "unary",
+   "params": [
+    "eid"
+   ]
+  },
+  {
+   "op": "experiment.document.create",
+   "method": "POST",
+   "route": "/v1/experiments/{eid}/documents",
+   "handler": "experiments.api:create_document",
+   "mode": "unary",
+   "params": [
+    "eid",
+    "body"
+   ]
+  },
+  {
+   "op": "experiment.document.get",
+   "method": "GET",
+   "route": "/v1/experiments/{eid}/documents/{doc_id}",
+   "handler": "experiments.api:get_document",
+   "mode": "unary",
+   "params": [
+    "eid",
+    "doc_id"
+   ]
+  },
+  {
+   "op": "experiment.document.update",
+   "method": "PUT",
+   "route": "/v1/experiments/{eid}/documents/{doc_id}",
+   "handler": "experiments.api:update_document",
+   "mode": "unary",
+   "params": [
+    "eid",
+    "doc_id",
+    "body"
+   ]
+  },
+  {
+   "op": "experiment.document.duplicate",
+   "method": "POST",
+   "route": "/v1/experiments/{eid}/documents/{doc_id}/duplicate",
+   "handler": "experiments.api:duplicate_document",
+   "mode": "unary",
+   "params": [
+    "eid",
+    "doc_id",
+    "body"
+   ]
+  },
+  {
+   "op": "experiment.document.delete",
+   "method": "DELETE",
+   "route": "/v1/experiments/{eid}/documents/{doc_id}",
+   "handler": "experiments.api:delete_document",
+   "mode": "unary",
+   "params": [
+    "eid",
+    "doc_id"
+   ]
+  },
+  {
+   "op": "paintbrush.status",
+   "method": "GET",
+   "route": "/v1/experiments/paintbrush/status",
+   "handler": "experiments.paintbrush.api:status",
+   "mode": "unary",
+   "params": []
+  },
+  {
+   "op": "paintbrush.render",
+   "method": "POST",
+   "route": "/v1/experiments/paintbrush/render",
+   "handler": "experiments.paintbrush.api:render",
+   "mode": "unary",
+   "params": [
+    "body"
+   ]
+  },
+  {
+   "op": "paintbrush.cancel",
+   "method": "POST",
+   "route": "/v1/experiments/paintbrush/cancel",
+   "handler": "experiments.paintbrush.api:cancel",
+   "mode": "unary",
+   "params": [
+    "body"
+   ]
+  },
+  {
+   "op": "paintbrush.warmup",
+   "method": "POST",
+   "route": "/v1/experiments/paintbrush/warmup",
+   "handler": "experiments.paintbrush.api:warmup",
+   "mode": "unary",
+   "params": [
+    "body"
+   ]
+  },
+  {
+   "op": "paintbrush.release",
+   "method": "POST",
+   "route": "/v1/experiments/paintbrush/release",
+   "handler": "experiments.paintbrush.api:release",
+   "mode": "unary",
+   "params": [
+    "body"
+   ]
+  },
+  {
+   "op": "paintbrush.install",
+   "method": "POST",
+   "route": "/v1/experiments/paintbrush/install",
+   "handler": "experiments.paintbrush.api:install",
+   "mode": "unary",
+   "params": [
+    "body"
+   ]
+  },
+  {
+   "op": "paintbrush.install_cancel",
+   "method": "POST",
+   "route": "/v1/experiments/paintbrush/install/cancel",
+   "handler": "experiments.paintbrush.api:install_cancel",
+   "mode": "unary",
+   "params": []
+  },
+  {
+   "op": "paintbrush.render.save",
+   "method": "POST",
+   "route": "/v1/experiments/paintbrush/renders/{render_id}/save",
+   "handler": "experiments.paintbrush.api:save_render",
+   "mode": "unary",
+   "params": [
+    "render_id",
+    "body"
+   ]
+  },
+  {
+   "op": "paintbrush.render.export",
+   "method": "POST",
+   "route": "/v1/experiments/paintbrush/renders/{render_id}/export",
+   "handler": "experiments.paintbrush.api:export_render",
+   "mode": "unary",
+   "params": [
+    "render_id"
+   ]
+  },
+  {
+   "op": "paintbrush.mask.export",
+   "method": "POST",
+   "route": "/v1/experiments/paintbrush/mask/export",
+   "handler": "experiments.paintbrush.api:export_mask",
+   "mode": "unary",
+   "params": [
+    "body"
+   ]
+  }
+ ]
+}
