@@ -40,9 +40,9 @@ pub struct Tunnel {
     pub local_port: u16,
 }
 
-/// Starts `ssh -N -L` and waits until the forwarded port accepts connections.
-pub async fn open_tunnel(ssh: &SshOptions, remote_host: &str, remote_port: u16) -> Result<Tunnel, String> {
-    let local_port = free_port();
+/// Arguments of `ssh -N -L 127.0.0.1:<local>:<remote_host>:<remote_port>`.
+pub fn tunnel_args(ssh: &SshOptions, local_port: u16, remote_host: &str, remote_port: u16) -> Vec<String> {
+    let remote_host = if remote_host.contains(':') && !remote_host.starts_with('[') { format!("[{remote_host}]") } else { remote_host.to_string() };
     let mut args = base_args(ssh);
     args.extend([
         "-N".into(),
@@ -50,6 +50,21 @@ pub async fn open_tunnel(ssh: &SshOptions, remote_host: &str, remote_port: u16) 
         "-L".into(), format!("127.0.0.1:{local_port}:{remote_host}:{remote_port}"),
         target(ssh),
     ]);
+    args
+}
+
+/// Opens the tunnel for a profile. Which remote port is forwarded depends on the
+/// transport (the SNP port for SNP, the HTTP API port otherwise): tunnelling and
+/// transport are independent, and TLS/authentication stay end-to-end through it.
+pub async fn open_profile_tunnel(profile: &crate::config::Profile) -> Result<Tunnel, String> {
+    let ssh = profile.ssh.as_ref().ok_or("SSH details are required for SSH mode")?;
+    open_tunnel(ssh, &profile.host, profile.active_port()).await
+}
+
+/// Starts `ssh -N -L` and waits until the forwarded port accepts connections.
+pub async fn open_tunnel(ssh: &SshOptions, remote_host: &str, remote_port: u16) -> Result<Tunnel, String> {
+    let local_port = free_port();
+    let args = tunnel_args(ssh, local_port, remote_host, remote_port);
     let mut child = Command::new("ssh")
         .args(&args)
         .stdin(Stdio::null())
@@ -167,6 +182,22 @@ mod tests {
         assert!(a.contains("BatchMode=yes"));
         assert!(a.contains("-p 2222"));
         assert!(a.contains("-i /k"));
+    }
+
+    #[test]
+    fn tunnel_forwards_the_requested_port() {
+        use crate::config::{ConnectionMode, Profile, Transport};
+        let o = SshOptions { user: "me".into(), host: "box".into(), port: 22, key_path: None };
+        let a = tunnel_args(&o, 40000, "127.0.0.1", 8744);
+        assert!(a.contains(&"127.0.0.1:40000:127.0.0.1:8744".to_string()));
+        assert_eq!(tunnel_args(&o, 1, "::1", 8742).iter().find(|x| x.starts_with("127.0.0.1:1:")).unwrap(), "127.0.0.1:1:[::1]:8742");
+        let mut p = Profile {
+            id: "p".into(), name: "n".into(), host: "127.0.0.1".into(), port: 8742, scheme: "http".into(), mode: ConnectionMode::Ssh,
+            ssh: Some(o), has_token: false, transport: Transport::Snp, snp_port: 8744, snp_pin: None, snp_server_name: None,
+        };
+        assert_eq!(p.active_port(), 8744);
+        p.transport = Transport::Https;
+        assert_eq!(p.active_port(), 8742);
     }
 
     #[test]

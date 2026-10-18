@@ -1,12 +1,14 @@
 <script lang="ts">
-  import { Brain, Check, ChevronLeft, ChevronRight, Copy, FileText, PencilLine, RefreshCw, TriangleAlert } from '@lucide/svelte';
+  import { Check, ChevronLeft, ChevronRight, Copy, FileText, PencilLine, RefreshCw, TriangleAlert } from '@lucide/svelte';
   import { mediaUrl } from '../api/transport';
   import type { Message } from '../api/types';
   import IconButton from '../ui/IconButton.svelte';
   import Button from '../ui/Button.svelte';
   import TextArea from '../ui/TextArea.svelte';
   import { handleCodeCopy, renderMarkdown } from './markdown';
-  import { prefs } from '../stores/prefs.svelte';
+  import Reasoning from './Reasoning.svelte';
+  import WebSources from './WebSources.svelte';
+  import { linkCitations } from './citations';
   import logo from '../assets/logo.svg';
 
   interface Props {
@@ -22,9 +24,9 @@
   let editing = $state(false);
   let draft = $state('');
   let copied = $state(false);
-  let showThinking = $state(prefs.chatShowReasoning);
 
-  const html = $derived(m.role === 'assistant' ? renderMarkdown(m.content) : '');
+  const search = $derived(m.search ?? m.stats?.search);
+  const html = $derived(m.role === 'assistant' ? linkCitations(renderMarkdown(m.content), search?.sources) : '');
   const idx = $derived(sibs.findIndex((s) => s.id === m.id));
   const stats = $derived(m.stats ?? {});
 
@@ -63,15 +65,14 @@
         <div class="bubble selectable">{m.content}</div>
       {/if}
     {:else}
-      {#if m.reasoning}
-        <button class="think" onclick={() => (showThinking = !showThinking)}><Brain />{streaming && !m.content ? 'Thinking…' : 'Reasoning'}<span class="faint">{showThinking ? 'hide' : 'show'}</span></button>
-        {#if showThinking}<div class="reasoning selectable">{m.reasoning}</div>{/if}
-      {/if}
+      {#if search}<WebSources {search} running={streaming && !m.content && !m.reasoning} />{/if}
+      <Reasoning reasoning={m.reasoning ?? ''} {streaming} answering={m.content.length > 0} />
       <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
       <div class="md selectable" onclick={handleCodeCopy}>
         {@html html}
         {#if streaming}<span class="caret"></span>{/if}
       </div>
+      {#if search?.sources.length && !streaming}<WebSources {search} running={false} list />{/if}
       {#if m.status === 'error'}<p class="errtxt"><TriangleAlert />{stats.error ?? 'Generation failed'}</p>{/if}
       {#if m.status === 'stopped'}<p class="faint small">Stopped</p>{/if}
       {#if m.status === 'partial' && !streaming}<p class="errtxt"><TriangleAlert />Reply incomplete: the connection was interrupted. Use Regenerate to try again.</p>{/if}
@@ -131,6 +132,8 @@
   .md :global(ul), .md :global(ol) { margin: 0 0 0.8em; padding-left: 1.4em; }
   .md :global(li) { margin: 0.25em 0; }
   .md :global(a) { color: var(--accent-hi); }
+  .md :global(a.cite) { display: inline-grid; place-items: center; min-width: 16px; height: 16px; padding: 0 3px; margin: 0 1px; border-radius: 8px; background: var(--bg-3); color: var(--text-1); font-size: 10.5px; font-weight: 600; text-decoration: none; vertical-align: 2px; }
+  .md :global(a.cite:hover) { background: var(--accent); color: var(--text-inv); }
   .md :global(blockquote) { margin: 0 0 0.8em; padding: 2px 14px; border-left: 3px solid var(--accent); color: var(--text-1); }
   .md :global(code:not(.hljs)) { padding: 1px 6px; border-radius: 5px; background: rgba(var(--fg-rgb), 0.07); font-size: 0.88em; }
   .md :global(table) { border-collapse: collapse; margin: 0 0 0.9em; font-size: 0.95em; }
@@ -154,9 +157,6 @@
   .md :global(.hljs-deletion) { color: var(--err); }
   .caret { display: inline-block; width: 8px; height: 1.05em; margin-left: 2px; vertical-align: text-bottom; border-radius: 2px; background: var(--lavender); animation: blink 1s steps(2) infinite; }
   @keyframes blink { 50% { opacity: 0; } }
-  .think { display: inline-flex; align-items: center; gap: 7px; align-self: flex-start; padding: 4px 10px; border-radius: var(--r-full); border: 1px solid var(--line-1); background: var(--bg-2); color: var(--text-2); font-size: var(--fs-sm); cursor: pointer; }
-  .think :global(svg) { width: 13px; height: 13px; color: var(--lavender); }
-  .reasoning { padding: 10px 14px; border-left: 2px solid var(--line-2); color: var(--text-2); font-size: var(--fs-sm); white-space: pre-wrap; line-height: 1.6; max-height: 320px; overflow-y: auto; }
   .foot { display: flex; align-items: center; gap: 2px; opacity: 0; transition: opacity var(--t-2) var(--ease); min-height: 24px; }
   .msg:hover .foot, .foot:has(.branch) { opacity: 1; }
   .branch { display: flex; align-items: center; gap: 2px; font-size: var(--fs-xs); color: var(--text-2); margin-right: 4px; }

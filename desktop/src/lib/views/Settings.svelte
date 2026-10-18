@@ -8,6 +8,7 @@
   import { api } from '../api/client';
   import { isTauri } from '../api/transport';
   import type { EngineSettings } from '../api/types';
+  import SearchSettings from '../components/SearchSettings.svelte';
   import ServerForm from '../components/ServerForm.svelte';
   import { conn, connect, deleteProfile, disconnect, type Profile } from '../stores/connection.svelte';
   import { loadModels } from '../stores/models.svelte';
@@ -22,6 +23,7 @@
   import Toggle from '../ui/Toggle.svelte';
   import { confirmDialog } from '../ui/dialogs.svelte';
   import { bytes } from '../util/format';
+  import { endpointLabel, profileTransport, transportLabel } from '../stores/transport';
 
   type Section = 'appearance' | 'servers' | 'engine' | 'endpoints' | 'desktop' | 'about';
   let section = $state<Section>('appearance');
@@ -139,15 +141,15 @@
       </div>
     {:else if section === 'servers'}
       <div class="head"><h2>Servers</h2><Button variant="primary" size="sm" onclick={() => (editing = 'new')}><Plus />Add server</Button></div>
-      <p class="muted lead">Sarness connects to a Sarness Engine over your LAN, Tailscale or an SSH tunnel. Tokens live in your system keyring.</p>
+      <p class="muted lead">Sarness connects directly to a Sarness Engine, optionally through an SSH tunnel. Tokens live in your system keyring.</p>
       <div class="list">
         {#each conn.profiles as p (p.id)}
           {@const isActive = conn.activeId === p.id}
           <div class="card prof" class:active={isActive}>
             <span class="led" class:on={isActive && conn.state === 'online'} class:off={isActive && conn.state === 'offline'}></span>
             <div class="info">
-              <div class="name">{p.name} {#if isActive}<Badge tone={conn.state === 'online' ? 'ok' : 'warn'}>{conn.state}</Badge>{/if}</div>
-              <div class="sub mono">{p.mode === 'ssh' ? `ssh ${p.ssh?.user}@${p.ssh?.host} → ${p.host}:${p.port}` : `${p.scheme}://${p.host}:${p.port}`}</div>
+              <div class="name">{p.name} <Badge tone={profileTransport(p) === 'snp' ? 'accent' : 'neutral'}>{transportLabel(profileTransport(p))}</Badge> {#if isActive}<Badge tone={conn.state === 'online' ? 'ok' : 'warn'}>{conn.state}</Badge>{/if}</div>
+              <div class="sub mono">{endpointLabel(p)}</div>
             </div>
             {#if !p.has_token}<Badge tone="warn"><KeyRound />No token</Badge>{/if}
             {#if isActive && conn.state !== 'offline'}
@@ -196,6 +198,7 @@
             <p class="small {gw.error ? 'err' : 'faint'}">{gw.error ? `Not reachable: ${gw.error}` : `Connected · ${gw.models.length} models: ${gw.models.map((m) => m.replace(/^gw:/, '')).join(', ')}`}</p>
           {/if}
         </div>
+        <SearchSettings {s} {patch} />
         <div class="group">
           <h3>Hugging Face</h3>
           <Field label="Access token" hint={s.hf_token ? 'A token is stored on the server. Enter a new one to replace it.' : 'Needed only for gated models. Stored on the server, never shown again.'}>
@@ -273,7 +276,7 @@
       <div class="head"><h2>About Sarness</h2></div>
       <div class="group">
         <p><strong>Sarness</strong> (Sarja Harness) — self-hosted AI workstation.</p>
-        <p class="muted small">Desktop {app?.version ?? '0.1.0'} · Engine {conn.system?.engine.version ?? '—'} · API {conn.system?.engine.api_version ?? '—'}</p>
+        <p class="muted small">Desktop {app?.version ?? '0.2.0'} · Engine {conn.system?.engine.version ?? '—'} · API {conn.system?.engine.api_version ?? '—'}</p>
         <p class="muted small" data-testid="build-stamp">Build {__SARNESS_BUILD__}</p>
         <p class="muted small">Keyboard: Ctrl+1…4 choose Chat/Code/Image/Video in the composer (←/→ also move between modes) · Enter send · Shift+Enter new line · Esc close settings · Ctrl+Shift+O new conversation · Alt+1…5 switch sections · Ctrl+Shift+1…4 focus a pane · Ctrl+Shift+M maximise or restore a pane · Ctrl+B sidebar · in the node editor: Space add node, Ctrl+Z/Y undo/redo, Ctrl+C/V/D copy/paste/duplicate, Ctrl+G group, double-click an edge to add a reroute.</p>
         {#if app}<p class="faint small mono">Config: {app.config_dir}</p>{/if}

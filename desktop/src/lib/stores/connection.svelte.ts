@@ -5,6 +5,7 @@ import { listen } from '@tauri-apps/api/event';
 import { api } from '../api/client';
 import { devTransport, isTauri, proxyTransport, setTransport, transport, wsUrl } from '../api/transport';
 import type { EngineEvent, LiveStats, SystemInfo } from '../api/types';
+import type { SnpNegotiated, Transport } from './transport';
 
 export interface SshOptions {
   user: string;
@@ -18,11 +19,23 @@ export interface Profile {
   name: string;
   host: string;
   port: number;
+  /** Legacy mirror of `transport` for the HTTP transports. */
   scheme: 'http' | 'https';
+  /** How the bytes get there (independent of the protocol spoken over them). */
   mode: 'direct' | 'ssh';
   ssh?: SshOptions | null;
   has_token: boolean;
+  /** Application protocol: SNP (native), HTTP or HTTPS. */
+  transport: Transport;
+  snp_port: number;
+  /** Pinned server identity, `sha256:<64 hex>`. */
+  snp_pin?: string | null;
+  /** Host name to verify when the server uses a CA-issued certificate (no pin). */
+  snp_server_name?: string | null;
 }
+
+export type SnpFailure = 'dns' | 'refused' | 'timeout' | 'tls' | 'pin_mismatch' | 'untrusted_certificate' | 'version' | 'auth'
+  | 'rate_limited' | 'server_proof' | 'protocol' | 'limit' | 'connection' | 'goaway' | 'ssh';
 
 export interface TestResult {
   ok: boolean;
@@ -31,6 +44,22 @@ export interface TestResult {
   latency_ms: number | null;
   health: Record<string, unknown> | null;
   system: SystemInfo | null;
+  transport?: Transport;
+  /** Negotiated SNP session (no secrets). */
+  snp?: (SnpNegotiated & { fingerprint: string }) | null;
+  error_kind?: SnpFailure | null;
+  /** Pin saved in the profile / pin the server presented (pin mismatch, untrusted certificate). */
+  expected_pin?: string | null;
+  presented_pin?: string | null;
+}
+
+export interface ProxyInfo {
+  url: string;
+  session: string;
+  connected: boolean;
+  profile_id: string | null;
+  transport: Transport | null;
+  snp: { status: { state: string; error: string | null; error_kind: string | null; fatal: boolean }; session: (SnpNegotiated & { session?: string }) | null } | null;
 }
 
 export type ConnState = 'booting' | 'unconfigured' | 'connecting' | 'online' | 'offline';
@@ -45,7 +74,25 @@ export const conn = $state({
   wsConnected: false,
   tunnel: null as string | null,
   lastEventAt: 0,
+  /** Transport of the active connection and, for SNP, the negotiated session. */
+  transport: null as Transport | null,
+  snp: null as ProxyInfo['snp'],
 });
+
+function applyProxyInfo(info: Pick<ProxyInfo, 'transport' | 'snp'>) {
+  conn.transport = info.transport ?? null;
+  conn.snp = info.snp ?? null;
+}
+
+/** Re-reads transport and negotiated SNP details from the desktop core. */
+export async function refreshTransportInfo() {
+  if (!isTauri) return;
+  try {
+    applyProxyInfo(await invoke<ProxyInfo>('proxy_info'));
+  } catch {
+    /* informational only */
+  }
+}
 
 export const activeProfile = () => conn.profiles.find((p) => p.id === conn.activeId) ?? null;
 
@@ -153,6 +200,7 @@ export async function refreshSystem() {
   try {
     conn.system = await api.get<SystemInfo>('/v1/system');
     trace(`system info loaded from ${conn.system.hardware.hostname}`);
+    void refreshTransportInfo();
     conn.lastError = null;
     if (conn.state !== 'online') conn.state = 'online';
   } catch (e) {
@@ -178,7 +226,8 @@ export async function initConnection() {
       return;
     }
     setTransport(dev);
-    conn.profiles = [{ id: 'dev', name: 'Development engine', host: dev.base, port: 0, scheme: 'http', mode: 'direct', has_token: true }];
+    conn.profiles = [{ id: 'dev', name: 'Development engine', host: dev.base, port: 0, scheme: 'http', mode: 'direct', has_token: true, transport: 'http', snp_port: 8744 }];
+    conn.transport = 'http';
     conn.activeId = 'dev';
     conn.state = 'connecting';
     await refreshSystem();
@@ -190,8 +239,9 @@ export async function initConnection() {
     conn.tunnel = e.payload.state;
     if (e.payload.state === 'up') openWs();
   });
-  const info = await invoke<{ url: string; session: string; connected: boolean }>('proxy_info');
+  const info = await invoke<ProxyInfo>('proxy_info');
   setTransport(proxyTransport(info.url, info.session, info.connected));
+  applyProxyInfo(info);
   if (!conn.activeId || !conn.profiles.length) {
     conn.state = 'unconfigured';
     return;
@@ -205,8 +255,9 @@ export async function connect(id: string) {
   stopWs();
   if (!isTauri) return;
   try {
-    const info = await invoke<{ url: string; session: string; connected: boolean }>('connect', { id });
+    const info = await invoke<ProxyInfo>('connect', { id });
     setTransport(proxyTransport(info.url, info.session, info.connected));
+    applyProxyInfo(info);
     conn.activeId = id;
     await refreshSystem();
     startWs();
@@ -214,6 +265,7 @@ export async function connect(id: string) {
   } catch (e) {
     conn.lastError = String(e);
     conn.state = 'offline';
+    void refreshTransportInfo();
     // Keep trying in the background; the engine may simply be starting.
     startWs();
   }
@@ -224,6 +276,7 @@ export async function disconnect() {
   if (isTauri) await invoke('disconnect');
   conn.state = conn.profiles.length ? 'offline' : 'unconfigured';
   conn.system = null;
+  conn.snp = null;
 }
 
 export async function saveProfile(profile: Profile, token?: string) {
@@ -243,6 +296,11 @@ export async function deleteProfile(id: string) {
 
 export async function testConnection(profile: Profile, token?: string) {
   return invoke<TestResult>('test_connection', { profile, token: token || null });
+}
+
+/** Trust-on-first-use: asks the server for its identity without authenticating. */
+export async function probePin(profile: Profile) {
+  return invoke<{ pin: string; fingerprint: string }>('snp_probe_pin', { profile });
 }
 
 export async function reconnectNow() {

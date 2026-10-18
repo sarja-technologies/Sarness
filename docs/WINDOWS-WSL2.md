@@ -89,7 +89,7 @@ On Sarness's first-run connection screen:
 
 Consult [Deploying Sarness](DEPLOYMENT.md) for Sarness Engine setup, address/bind modes, tokens, and SSH tunnel instructions.
 
-**WSL2 networking caveat:** If you use Tailscale on *Windows*, do not assume its routes and DNS will automatically work from *inside Ubuntu/WSL2*. Check reachability *from the Ubuntu terminal*. Depending on your network and WSL configuration, you may need Tailscale configured within WSL2 or another approved connection path. A server bound to `127.0.0.1` on a **different computer** will not be reachable by entering `127.0.0.1` in WSL2.
+**WSL2 networking caveat:** Do not assume that routes, VPNs and DNS names that work on *Windows* (for example Tailscale and its MagicDNS names) also work from *inside Ubuntu/WSL2*. Check reachability *from the Ubuntu terminal*. Depending on your network and WSL configuration, you may need the VPN configured within WSL2 or another approved connection path. A server bound to `127.0.0.1` on a **different computer** will not be reachable by entering `127.0.0.1` in WSL2.
 
 For a quick check from Ubuntu, substitute a real reachable server address (without angle brackets):
 
@@ -97,7 +97,7 @@ For a quick check from Ubuntu, substitute a real reachable server address (witho
 curl -v http://SERVER_IP:8742/v1/health
 ```
 
-This is only a basic connectivity/health check; a successful response does not verify authentication or full model functionality. Do **not** expose an unauthenticated or plaintext service to the public internet. Follow the server's existing Tailscale/SSH/trusted-LAN security configuration.
+This is only a basic connectivity/health check; a successful response does not verify authentication or full model functionality. Do **not** expose an unauthenticated or plaintext service to the public internet. Follow the server's existing VPN/SSH/trusted-LAN security configuration.
 
 ## 5. Troubleshooting
 
@@ -131,7 +131,7 @@ If `xclock` cannot open a window, repair/update WSLg before troubleshooting Sarn
 
 - Test `curl http://SERVER_IP:8742/v1/health` **inside Ubuntu**.
 - Confirm the engine is running, its bind address and port are correct, and that you are on a trusted reachable network.
-- If using Tailscale or MagicDNS, verify network routing and DNS *from WSL2*, not only Windows.
+- If the server is reached through a VPN or by a VPN-provided name, verify network routing and DNS *from WSL2*, not only Windows.
 - For SSH tunnel mode, install/use SSH and keys **inside WSL2** and follow [DEPLOYMENT.md](DEPLOYMENT.md). Windows-side SSH configuration is not automatically identical.
 - Confirm the API token through the Sarness connection screen; do not paste it into issue reports or public logs.
 

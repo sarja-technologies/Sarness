@@ -1,103 +1,70 @@
 # Sarness (Sarja Harness)
 
-A self-hosted AI workstation: **local LLM chat, image generation and editing,
-text/image-to-video and node-based workflows** in one native Linux desktop app,
-powered by your own GPU server.
+Self-hosted AI workstation: an LLM chat/agent client, image and video generation, node-graph workflows and interactive experiments, driven from a native Linux desktop against a GPU host the operator controls.
 
-* **Sarness Desktop** — Tauri 2 + Rust + Svelte 5 (no Electron, no React).
-  Light-first graphite/off-white design with a single teal accent, optional
-  dark theme, 120–240 ms motion.
-* **Sarness Engine** — Python + FastAPI + PyTorch/Diffusers + llama.cpp, SQLite,
-  a persistent VRAM-aware job queue, crash-isolated GPU worker and a typed DAG
-  workflow executor. No ComfyUI.
-
-```
-desktop/   Tauri app (src/ = Svelte UI, src-tauri/ = Rust core: proxy, tunnels, keyring, installer)
-engine/    Sarness Engine (sarness_engine/ package, tests/)
-scripts/   install-engine.sh (server), setup-dev.sh, dev.sh, test.sh, build.sh, package-engine.sh
-docs/      ARCHITECTURE.md · API.md · WORKFLOW_FORMAT.md · DEPLOYMENT.md · MODELS.md · DEVELOPMENT.md · EXPERIMENTS.md
-dist/      build output (.deb, .rpm, .AppImage, engine bundle, SHA256SUMS)
-```
-
-## Quick start
-
-Pre-built Linux installers (`.deb`, `.rpm`, `.AppImage`) and the engine bundle are on the
-[Releases page](https://github.com/crossainthero-lab/Sarness/releases).
-
-**Windows (WSL2, experimental):** see [docs/WINDOWS-WSL2.md](docs/WINDOWS-WSL2.md) to run the Linux `.deb` with WSLg. This route has **not yet been validated**, and no native Windows installer is included in v0.1.0.
-
-**Server** (Ubuntu, NVIDIA driver ≥ 570): either use the desktop's guided SSH
-installer, or copy `dist/sarness-engine.tar.gz` + `scripts/install-engine.sh` and run
-
-```bash
-bash install-engine.sh --source sarness-engine.tar.gz --bind tailscale --with-llama
-```
-
-Note the API token it prints. **Desktop**: `sudo apt install ./Sarness_0.1.0_amd64.deb`
-(or run the AppImage), launch *Sarness*, enter the server's Tailscale IP / MagicDNS
-name / LAN IP and port `8742`, paste the token, **Test connection**, **Save & connect**.
-Full guide: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
-
-Then open **Models → Catalog** and install what the "Recommended for this
-server" badges suggest (for 12 GB GPUs: Qwen3 4B, SDXL Turbo/SDXL, Wan 2.1 1.3B,
-Real-ESRGAN, SDXL fp16-fix VAE).
-
-## Using Sarness
-
-Sarness opens to **one conversation** with **one prompt box**, like a chat app. Pick **Chat, Code, Image or
-Video** from the mode selector inside the prompt box; the model list and settings change to match, and
-everything you make appears in the same timeline.
-
-| Mode | What the prompt box offers | What appears in the conversation |
+| Component | Version | Stack |
 |---|---|---|
-| **Chat** | Chat models from your server (local GGUF or remote endpoints), temperature/top-p/top-k/min-p/repeat/max-tokens, thinking, context and GPU layers, text and (for vision models) image attachments, Stop. | Streaming Markdown replies with copy, regenerate, edit and branch navigation. |
-| **Code** | A **local coding agent**: choose a project folder (recent, open, or create new), a permission mode (Ask / Workspace Auto / Full Access) and a model. | The agent's plan, tool activity cards (files read, edits with diffs, commands with live terminal output), permission requests, and a final summary with changed files and real exit codes. Files are read, written and run **on the computer running Sarness**; the server only provides the model. See [docs/LOCAL_AGENT.md](docs/LOCAL_AGENT.md). |
-| **Image** | Image models, aspect ratio, size, quality, seed, steps, guidance, scheduler, LoRAs, VAE, upscale, batch, memory mode, format; attach a reference image to edit it (strength, mask painting for inpaint). Only options the selected model supports are shown. | A progress card with live preview and **Cancel**, then the image with Edit prompt, Regenerate, Vary subtle/strong, same-seed rerun, favourite, save, export, open in folder. |
-| **Video** | Video models, text→video or image→video (when the model supports it), resolution, length, frame rate, seed, steps, guidance, flow shift, an estimate measured from your server's own earlier runs. | A progress card with **Cancel**, then a playable video with the same actions. |
+| Sarness Engine | 0.4.0 | Python ≥ 3.11, FastAPI, PyTorch/Diffusers, llama.cpp, SQLite, VRAM-aware persistent job queue, crash-isolated GPU worker, typed DAG workflow executor |
+| Sarness Desktop | 0.2.0 | Tauri 2, Rust, Svelte 5; no Electron |
+| HTTP API | 1.1 | JSON/SSE/WebSocket, [docs/API.md](docs/API.md) |
+| SNP | 1 | Native binary protocol over TLS 1.3, [docs/SNP.md](docs/SNP.md) |
 
-The chat model is told (as text) which images/videos were generated earlier in the conversation, so you
-can refer to them; it cannot see the pixels. Both **Image** and **Video** have an optional **Open node
-editor** (advanced) in their settings.
+```
+desktop/   src/ Svelte UI · src-tauri/ Rust core (loopback proxy, SNP client, SSH tunnels, keyring, installer, local agent)
+engine/    sarness_engine/ package (api, chat, search, snp, jobs, models, runtime, workflow, experiments) · tests/
+scripts/   install-engine.sh · package-engine.sh · setup-dev.sh · dev.sh · test.sh · build.sh
+docs/      SNP.md · SNP-OPS.md · API.md · DEPLOYMENT.md · ARCHITECTURE.md · WORKFLOW_FORMAT.md · MODELS.md · EXPERIMENTS.md · LOCAL_AGENT.md · DEVELOPMENT.md · WINDOWS-WSL2.md
+```
 
-**Sidebar:** New conversation, search, projects, conversation history; plus Library (every image and
-video with metadata, filters, trash), Models (installed, catalog, Hugging Face install), Server
-(GPU/VRAM/RAM, the job queue with cancel/retry) and Settings. There are no separate Chat/Code/Image/Video
-pages.
+## Interfaces between the components
 
-**Work | Experiments:** the switch at the top of the sidebar moves between your normal work and
-**Experiments**, a space for interactive features (Alt+6). Entering Experiments shows the experiment
-selection screen first. Experiments you have open keep their state while you are back in Work. The first
-experiment is **God's Paintbrush**: paint a landscape with material brushes (sky, water, mountains, trees, …)
-and the server turns it into a photorealistic landscape. A live GauGAN preview updates while you paint
-(~70 ms on an RTX 4070 Ti), and a refined photo follows when you pause (~1.4 s). Paintings are saved on the
-server, and results go to the Library. See [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md).
+The desktop's webview communicates only with an authenticated loopback interface served by the desktop's native process; that process alone communicates with the engine, over one of three transports selected per connection profile, independently of whether an SSH forward carries the bytes:
 
-**Optional multi-conversation layout:** the layout button (top right) offers one, two (side by side or
-stacked), three, or four (2×2) independent conversations, each with the same prompt box. Drag dividers to
-resize, drag a header grip to swap, minimise/maximise/close. Default is one conversation. Layout and every
-conversation (mode, draft, settings, generations) persist across restarts; jobs keep running on the server
-while you work elsewhere.
+| Transport | Engine port | Notes |
+|---|---|---|
+| `snp` | 8744 | One TLS 1.3 connection, multiplexed typed streams, flow control, idempotent retries, pinned server identity, HMAC challenge–response. No HTTP on the wire. |
+| `http` | 8742 | JSON API, cleartext. |
+| `https` | 8742 | JSON API over a CA-trusted certificate. |
 
-Keyboard: `Ctrl+1…4` choose Chat/Code/Image/Video (←/→ also move between modes) · `Enter` send ·
-`Shift+Enter` new line · `Esc` close settings · `Ctrl+Shift+O` new conversation · `Alt+1…5` sections · `Alt+6` Experiments ·
-`Ctrl+Shift+1…4` focus a pane · `Ctrl+Shift+M` maximise/restore a pane · `Ctrl+B` sidebar.
+A failure of any security check (pin, server proof, credentials) terminates the connection attempt; no transport falls back to another. Details: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) §6–§7, [docs/SNP.md](docs/SNP.md).
 
-## Where things are stored
+## Installation
 
-* **Server (canonical):** `~/.local/share/sarness-engine/` — `outputs/images|videos/YYYY/MM/`,
-  `sarness.db`, `models/`, `uploads/`, `thumbs/`, `logs/`.
-* **Desktop:** `~/.config/sarness/profiles.json` (no secrets), tokens in the GNOME
-  keyring, media cache `~/.cache/sarness/media` (6 GB LRU, viewable offline),
-  “Save” copies to `~/Pictures/Sarness` and `~/Videos/Sarness`.
+Engine host requirements and procedures (guided SSH installation, manual installation, service units, configuration keys, firewall policy, upgrade and rollback): [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). Release artefacts (`.deb`, `.rpm`, `.AppImage`, `sarness-engine.tar.gz`, `SHA256SUMS`) are published on the releases page. Windows via WSL2 is unvalidated: [docs/WINDOWS-WSL2.md](docs/WINDOWS-WSL2.md).
+
+```
+bash install-engine.sh --source sarness-engine.tar.gz [--with-llama]      # engine host; prints the API token once
+sudo apt install ./Sarness_<version>_amd64.deb                              # desktop
+```
+
+## Conversation surface
+
+One conversation and one prompt box; the mode (Chat, Code, Image, Video) selects the model list and settings, and every artefact appears in the same timeline.
+
+| Mode | Execution | Notes |
+|---|---|---|
+| Chat | Engine (local GGUF via llama.cpp, or OpenAI-compatible endpoints) | Streaming Markdown, branching (regenerate/edit create siblings), text and vision attachments, sampling parameters, `thinking`. **Reasoning display** and optional **web search** (below). |
+| Code | Model on the engine; **tools execute on the desktop host**, confined to a chosen project directory | Ask / Workspace Auto / Full Access permission modes. [docs/LOCAL_AGENT.md](docs/LOCAL_AGENT.md). Never receives web search. |
+| Image | Engine queue (local diffusers or gateway `gw:` models) | Options limited to model capabilities; txt2img, img2img, inpaint, LoRA, VAE, upscale, seeds, batch. |
+| Video | Engine queue | t2v/i2v, resolution, frames, fps, flow shift, memory modes, timing estimates from prior local runs. |
+
+**Reasoning (Chat).** While a model reasons, one muted line shows the latest segment of the reasoning it has actually emitted; selecting it expands the complete live trace. When the answer begins the trace folds (unless the reader opened it) into a *See thinking* control above the answer. Only provider-exposed reasoning (`reasoning_content`, `reasoning`) or a leading `<think>…</think>` block is used; models exposing none show only a neutral activity indicator. Reasoning is never synthesised, never reclassified from answer text and never fed back to the model. Semantics: [docs/API.md](docs/API.md#reasoning).
+
+**Web search (Chat).** Off by default; enabled per message by the composer switch or globally by `search_policy`. The engine queries a provider (SearXNG, keyless DuckDuckGo, or Brave with a key), fetches pages under SSRF controls, supplies them to the model as delimited untrusted data, and returns numbered sources; answers cite `[n]` and only returned sources are linkable. Failure is reported, never masked. [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) §9, [docs/API.md](docs/API.md#web-search).
+
+**Experiments** (Work | Experiments switch): interactive, GPU-resident features. *God's Paintbrush*: material-label painting rendered by a live GauGAN stage and a ControlNet-Seg refine stage. [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md).
+
+Layouts of one to four independent conversations persist across restarts; jobs continue on the engine independently of the UI. Shortcuts: `Ctrl+1…4` mode, `Enter`/`Shift+Enter`, `Esc`, `Ctrl+Shift+O` new conversation, `Alt+1…6` sections, `Ctrl+Shift+1…4` focus pane, `Ctrl+Shift+M` maximise, `Ctrl+B` sidebar.
+
+## State
+
+* Engine: `<data_dir>` (default `~/.local/share/sarness-engine`): `sarness.db`, `config.json` (0600), `snp/` (0700), `models/`, `outputs/images|videos/YYYY/MM/`, `uploads/`, `thumbs/`, `logs/`.
+* Desktop: `~/.config/sarness/profiles.json` (no secrets); API token in the Secret Service keyring (fallback `secrets.json`, 0600); content-addressed media cache `~/.cache/sarness/media` (6 GB LRU); exports to `~/Pictures/Sarness`, `~/Videos/Sarness`.
 
 ## Development
 
-```bash
-scripts/setup-dev.sh     # engine venv (CUDA torch) + pnpm install
-scripts/dev.sh           # local engine + `tauri dev`
-scripts/test.sh          # pytest, svelte-check, vitest, cargo test
-scripts/build.sh         # dist/: .deb .rpm .AppImage + engine bundle
+```
+scripts/setup-dev.sh   scripts/dev.sh   scripts/test.sh   scripts/build.sh
 ```
 
-See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-Verified models, timings and VRAM measurements: [docs/MODELS.md](docs/MODELS.md).
+Build, test and CI details: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md); structure: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); verified model measurements: [docs/MODELS.md](docs/MODELS.md).

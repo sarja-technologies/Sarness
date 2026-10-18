@@ -8,18 +8,40 @@ Sarness is two programs that talk over a versioned HTTP/WebSocket API:
 │   views: Workspace · Images · Videos · Chat · Library · Models ·  │        │                                                     │
 │          Settings · Advanced workflow editor (Svelte Flow)        │        │  API process (no torch import, never touches CUDA)  │
 │        │ fetch / SSE / WebSocket to http://127.0.0.1:<port>       │        │   ├─ SQLite (WAL): jobs, generations, files,        │
-│        ▼  + per-launch session key                                │  HTTP  │   │   projects, chats, workflows, models, downloads │
+│        ▼  + per-launch session key                                │ SNP /  │   │   projects, chats, workflows, models, downloads │
 │  Rust core                                                        │ ─────► │   ├─ Job service: queue, admission control,        │
-│   ├─ loopback reverse proxy (axum): injects the API token,        │  (LAN, │   │   OOM retry, crash recovery                     │
-│   │  streams bodies, bridges /v1/events WebSocket,                │ Tail-  │   ├─ Worker supervisor ──spawn──► GPU worker proc   │
-│   │  content-addressed media cache (offline viewing)              │ scale  │   │                              ├─ workflow exec  │
-│   ├─ connection profiles + OS keyring tokens                      │  or    │   │                              ├─ model manager   │
-│   ├─ SSH tunnels (ssh -L, key auth, auto-restart)                 │  SSH)  │   │                              └─ diffusers/torch │
-│   ├─ discovery (tailscale status + /v1/health probe)              │        │   ├─ llama.cpp manager ──spawn──► llama-server      │
+│   ├─ loopback reverse proxy (axum): injects the API token,        │  HTTP  │   │   OOM retry, crash recovery                     │
+│   │  streams bodies, bridges /v1/events WebSocket,                │ direct │   ├─ Worker supervisor ──spawn──► GPU worker proc   │
+│   │  content-addressed media cache (offline viewing)              │   or   │   │                              ├─ workflow exec  │
+│   ├─ connection profiles + OS keyring tokens                      │  SSH   │   │                              ├─ model manager   │
+│   ├─ SSH tunnels (ssh -L, key auth, auto-restart)                 │ tunnel │   │                              └─ diffusers/torch │
+│   ├─ discovery (known peers + /v1/health probe)               │        │   ├─ llama.cpp manager ──spawn──► llama-server      │
 │   └─ guided installer (scp + install-engine.sh over SSH)          │        │   ├─ downloads (resumable HF), model registry       │
 └───────────────────────────────────────────────────────────────────┘        │   └─ event bus → /v1/events                         │
                                                                              └─────────────────────────────────────────────────────┘
 ```
+
+## Desktop transports
+
+The webview never knows which protocol is in use: it always talks to the authenticated
+loopback proxy. A profile chooses the **transport** (how the desktop speaks to the
+engine) and, independently, the **mode** (direct or through an SSH tunnel).
+
+* **HTTP / HTTPS** - the proxy forwards requests to the engine's JSON API unchanged.
+* **SNP** - the proxy does not contact the engine over HTTP at all. `snp/adapter.rs`
+  maps each request to an SNP operation using the catalogue `engine/sarness_engine/snp/ops.json`
+  (method + route + parameters), returns JSON in the shape the HTTP API would, turns
+  `chat.generate` / `agent.completion` streams into the same `data: {json}` SSE bytes, bridges
+  `/v1/events` to `event.subscribe`, serves `/v1/files/<id>` through `file.get` into the same
+  content-addressed media cache, and streams uploads as `file.upload` DATA frames. A webview
+  that disconnects cancels the SNP stream.
+* The SNP client (`snp/client.rs`) keeps one TLS 1.3 connection with many streams, per-stream
+  and connection flow control (credit is returned only after the consumer has consumed the
+  data, so slow readers push back on the server), cancellation, deadlines, liveness pings,
+  exponential-backoff reconnects and idempotency keys for retried writes. Identity or
+  authentication failures are sticky: no automatic reconnect and never a fallback to HTTP.
+
+See [SNP.md](SNP.md) for the protocol and [SNP-OPS.md](SNP-OPS.md) for the operation catalogue.
 
 ## Why these boundaries
 

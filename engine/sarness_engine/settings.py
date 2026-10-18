@@ -37,9 +37,20 @@ DEFAULTS: dict[str, Any] = {
     # and before the experiment worker exits entirely (frees all of its VRAM). 0 disables.
     "experiments_refine_idle_minutes": 3,
     "experiments_worker_idle_minutes": 10,
+    # Chat web search. Provider: auto | searxng | duckduckgo | brave. "auto" uses SearXNG when its URL is set,
+    # otherwise DuckDuckGo's keyless HTML endpoint. Policy: manual (per-message toggle) | always.
+    "search_provider": "auto",
+    "search_searxng_url": "",
+    "search_brave_key": "",
+    "search_policy": "manual",
+    "search_max_results": 5,
+    "search_fetch_pages": 3,
+    "search_timeout_s": 10,
 }
 
-SECRET_KEYS = {"hf_token", "gateway_token"}
+CHOICES = {"search_provider": ("auto", "searxng", "duckduckgo", "brave"), "search_policy": ("manual", "always")}
+
+SECRET_KEYS = {"hf_token", "gateway_token", "search_brave_key"}
 
 
 class Settings:
@@ -90,6 +101,9 @@ class Settings:
                         e["api_key"] = ""
                     merged.append(e)
                 value = merged
+            choices = CHOICES.get(key)
+            if choices and value not in choices:
+                raise TypeError(f"{key} must be one of {', '.join(choices)}")
             expected = type(DEFAULTS[key])
             if expected is int and isinstance(value, float):
                 value = int(value)

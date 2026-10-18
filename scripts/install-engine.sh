@@ -104,7 +104,7 @@ case "$BIND" in
     if command -v tailscale >/dev/null 2>&1 && TS_IP="$(tailscale ip -4 2>/dev/null | head -1)" && [[ -n "$TS_IP" ]]; then
       HOST="$TS_IP"
     else
-      warn "Tailscale is not running on this server; binding to 127.0.0.1 (connect with SSH forwarding)."
+      warn "No private-network interface (Tailscale) is running on this server; binding to 127.0.0.1 (connect with an SSH tunnel)."
     fi ;;
   lan)
     LAN_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<NF;i++) if($i=="src") print $(i+1)}' | head -1)"

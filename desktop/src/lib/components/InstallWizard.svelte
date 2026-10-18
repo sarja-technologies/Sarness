@@ -34,7 +34,8 @@
     });
     try {
       // Save the profile first so the installer can store the token against it.
-      const saved = await saveProfile({ ...profile, mode: bind === 'loopback' ? 'ssh' : profile.mode });
+      // The installer configures the engine's HTTP API; SNP can be switched on afterwards.
+      const saved = await saveProfile({ ...profile, transport: profile.transport === 'https' ? 'https' : 'http', mode: bind === 'loopback' ? 'ssh' : profile.mode });
       const res = await invoke<{ host: string; port: number; data_dir: string; service: string }>('install_engine', {
         profile: saved, options: { bind, install_llama: withLlama, port: profile.port || 8742 },
       });
@@ -65,11 +66,12 @@
     <div class="opt">
       <span class="lbl">Listen on</span>
       <Segmented bind:value={bind} items={[
-        { value: 'tailscale', label: 'Tailscale (recommended)' },
+        { value: 'tailscale', label: 'Private network (recommended)' },
         { value: 'loopback', label: 'Localhost + SSH tunnel' },
-        { value: 'lan', label: 'LAN address' },
+        { value: 'lan', label: 'Local network address' },
       ]} />
     </div>
+    {#if bind === 'tailscale'}<p class="hint">Binds to the server's private-network interface when one is available, otherwise to localhost (then connect through an SSH tunnel).</p>{/if}
     <Toggle bind:checked={withLlama} label="Install llama.cpp (CUDA) for chat" hint="Downloads the official prebuilt llama-server (~770 MB)." />
     {#if lines.length || running}
       <div class="log mono selectable" bind:this={logEl}>
@@ -91,6 +93,7 @@
   .promise { margin: 0; padding-left: 18px; color: var(--text-2); display: flex; flex-direction: column; gap: 4px; font-size: var(--fs-sm); }
   code { color: var(--lavender); }
   .opt { display: flex; align-items: center; gap: 12px; }
+  .hint { margin: 0; font-size: var(--fs-xs); color: var(--text-3); line-height: 1.45; }
   .lbl { font-size: var(--fs-sm); color: var(--text-1); font-weight: 550; }
   .log { height: 260px; overflow-y: auto; padding: 10px 12px; border-radius: var(--r-md); background: var(--bg-0); border: 1px solid var(--line-1); font-size: 11.5px; line-height: 1.55; color: var(--text-1); }
   .ln { white-space: pre-wrap; overflow-wrap: anywhere; }

@@ -462,7 +462,24 @@ export interface Attachment {
   height?: number | null;
 }
 
+export interface SearchSource {
+  n: number;
+  title: string;
+  url: string;
+  snippet: string;
+  domain: string;
+  fetched: boolean;
+}
+
+export interface SearchInfo {
+  query: string;
+  provider?: string;
+  error?: string | null;
+  sources: SearchSource[];
+}
+
 export interface MessageStats {
+  search?: SearchInfo;
   elapsed_s?: number;
   ttft_s?: number;
   tokens_per_s?: number;
@@ -484,6 +501,8 @@ export interface Message {
   stats: MessageStats | null;
   status: 'complete' | 'partial' | 'stopped' | 'error';
   created_at: number;
+  /** Live web-search state while this reply is being generated (the stored copy is `stats.search`). */
+  search?: SearchInfo;
 }
 
 export interface ChatParams {
@@ -521,6 +540,7 @@ export type ChatEvent =
   | { type: 'assistant_start'; message: Message }
   | { type: 'status'; text: string }
   | { type: 'delta'; content: string; reasoning: string }
+  | { type: 'search'; phase: 'started' | 'results' | 'unavailable'; query: string; provider?: string; error?: string | null; sources?: SearchSource[] }
   | { type: 'done'; message: Message }
   | { type: 'error'; message: string };
 
@@ -539,6 +559,13 @@ export interface EngineSettings {
   gateway_token: boolean | string;
   oom_retry_with_offload: boolean;
   job_max_attempts: number;
+  search_provider: 'auto' | 'searxng' | 'duckduckgo' | 'brave';
+  search_searxng_url: string;
+  search_brave_key: boolean | string;
+  search_policy: 'manual' | 'always';
+  search_max_results: number;
+  search_fetch_pages: number;
+  search_timeout_s: number;
 }
 
 export interface EngineEvent<T = any> {
