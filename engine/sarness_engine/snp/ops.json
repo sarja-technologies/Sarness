@@ -864,7 +864,7 @@
   {
    "op": "paintbrush.status",
    "method": "GET",
-   "route": "/v1/experiments/paintbrush/status",
+   "route": "/v1/experiments/gods-paintbrush/status",
    "handler": "experiments.paintbrush.api:status",
    "mode": "unary",
    "params": []
@@ -872,7 +872,7 @@
   {
    "op": "paintbrush.render",
    "method": "POST",
-   "route": "/v1/experiments/paintbrush/render",
+   "route": "/v1/experiments/gods-paintbrush/render",
    "handler": "experiments.paintbrush.api:render",
    "mode": "unary",
    "params": [
@@ -882,7 +882,7 @@
   {
    "op": "paintbrush.cancel",
    "method": "POST",
-   "route": "/v1/experiments/paintbrush/cancel",
+   "route": "/v1/experiments/gods-paintbrush/cancel",
    "handler": "experiments.paintbrush.api:cancel",
    "mode": "unary",
    "params": [
@@ -892,7 +892,7 @@
   {
    "op": "paintbrush.warmup",
    "method": "POST",
-   "route": "/v1/experiments/paintbrush/warmup",
+   "route": "/v1/experiments/gods-paintbrush/warmup",
    "handler": "experiments.paintbrush.api:warmup",
    "mode": "unary",
    "params": [
@@ -902,7 +902,7 @@
   {
    "op": "paintbrush.release",
    "method": "POST",
-   "route": "/v1/experiments/paintbrush/release",
+   "route": "/v1/experiments/gods-paintbrush/release",
    "handler": "experiments.paintbrush.api:release",
    "mode": "unary",
    "params": [
@@ -912,7 +912,7 @@
   {
    "op": "paintbrush.install",
    "method": "POST",
-   "route": "/v1/experiments/paintbrush/install",
+   "route": "/v1/experiments/gods-paintbrush/install",
    "handler": "experiments.paintbrush.api:install",
    "mode": "unary",
    "params": [
@@ -922,7 +922,7 @@
   {
    "op": "paintbrush.install_cancel",
    "method": "POST",
-   "route": "/v1/experiments/paintbrush/install/cancel",
+   "route": "/v1/experiments/gods-paintbrush/install/cancel",
    "handler": "experiments.paintbrush.api:install_cancel",
    "mode": "unary",
    "params": []
@@ -930,7 +930,7 @@
   {
    "op": "paintbrush.render.save",
    "method": "POST",
-   "route": "/v1/experiments/paintbrush/renders/{render_id}/save",
+   "route": "/v1/experiments/gods-paintbrush/renders/{render_id}/save",
    "handler": "experiments.paintbrush.api:save_render",
    "mode": "unary",
    "params": [
@@ -941,7 +941,7 @@
   {
    "op": "paintbrush.render.export",
    "method": "POST",
-   "route": "/v1/experiments/paintbrush/renders/{render_id}/export",
+   "route": "/v1/experiments/gods-paintbrush/renders/{render_id}/export",
    "handler": "experiments.paintbrush.api:export_render",
    "mode": "unary",
    "params": [
@@ -951,7 +951,7 @@
   {
    "op": "paintbrush.mask.export",
    "method": "POST",
-   "route": "/v1/experiments/paintbrush/mask/export",
+   "route": "/v1/experiments/gods-paintbrush/mask/export",
    "handler": "experiments.paintbrush.api:export_mask",
    "mode": "unary",
    "params": [

@@ -91,13 +91,13 @@ Generated from `engine/sarness_engine/snp/ops.json` (normative). `mode` is defin
 | `experiment.document.update` | unary | `eid`, `doc_id`, `body` | PUT `/v1/experiments/{eid}/documents/{doc_id}` |
 | `experiment.document.duplicate` | unary | `eid`, `doc_id`, `body` | POST `/v1/experiments/{eid}/documents/{doc_id}/duplicate` |
 | `experiment.document.delete` | unary | `eid`, `doc_id` | DELETE `/v1/experiments/{eid}/documents/{doc_id}` |
-| `paintbrush.status` | unary | — | GET `/v1/experiments/paintbrush/status` |
-| `paintbrush.render` | unary | `body` | POST `/v1/experiments/paintbrush/render` |
-| `paintbrush.cancel` | unary | `body` | POST `/v1/experiments/paintbrush/cancel` |
-| `paintbrush.warmup` | unary | `body` | POST `/v1/experiments/paintbrush/warmup` |
-| `paintbrush.release` | unary | `body` | POST `/v1/experiments/paintbrush/release` |
-| `paintbrush.install` | unary | `body` | POST `/v1/experiments/paintbrush/install` |
-| `paintbrush.install_cancel` | unary | — | POST `/v1/experiments/paintbrush/install/cancel` |
-| `paintbrush.render.save` | unary | `render_id`, `body` | POST `/v1/experiments/paintbrush/renders/{render_id}/save` |
-| `paintbrush.render.export` | unary | `render_id` | POST `/v1/experiments/paintbrush/renders/{render_id}/export` |
-| `paintbrush.mask.export` | unary | `body` | POST `/v1/experiments/paintbrush/mask/export` |
+| `paintbrush.status` | unary | — | GET `/v1/experiments/gods-paintbrush/status` |
+| `paintbrush.render` | unary | `body` | POST `/v1/experiments/gods-paintbrush/render` |
+| `paintbrush.cancel` | unary | `body` | POST `/v1/experiments/gods-paintbrush/cancel` |
+| `paintbrush.warmup` | unary | `body` | POST `/v1/experiments/gods-paintbrush/warmup` |
+| `paintbrush.release` | unary | `body` | POST `/v1/experiments/gods-paintbrush/release` |
+| `paintbrush.install` | unary | `body` | POST `/v1/experiments/gods-paintbrush/install` |
+| `paintbrush.install_cancel` | unary | — | POST `/v1/experiments/gods-paintbrush/install/cancel` |
+| `paintbrush.render.save` | unary | `render_id`, `body` | POST `/v1/experiments/gods-paintbrush/renders/{render_id}/save` |
+| `paintbrush.render.export` | unary | `render_id` | POST `/v1/experiments/gods-paintbrush/renders/{render_id}/export` |
+| `paintbrush.mask.export` | unary | `body` | POST `/v1/experiments/gods-paintbrush/mask/export` |
