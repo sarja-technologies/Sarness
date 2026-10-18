@@ -38,6 +38,9 @@ export function proxyTransport(url: string, session: string, connected: boolean)
 
 export function devTransport(): Transport | null {
   const url = import.meta.env.VITE_ENGINE_URL as string | undefined;
+  // Dev only: a headless loopback proxy (any engine transport) with its session key.
+  const session = import.meta.env.VITE_ENGINE_SESSION as string | undefined;
+  if (url && session && import.meta.env.DEV) return proxyTransport(url.replace(/\/$/, ''), session, true);
   const token = import.meta.env.VITE_ENGINE_TOKEN as string | undefined;
   if (!url || !token || !import.meta.env.DEV) return null;
   return { base: url.replace(/\/$/, ''), headers: { Authorization: `Bearer ${token}` }, mediaQuery: `token=${encodeURIComponent(token)}`, connected: true };
