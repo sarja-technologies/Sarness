@@ -13,7 +13,7 @@ SNP does not rely on obscurity. All confidentiality and integrity are provided b
 ## 2. Conventions
 
 * All multi-byte integers are unsigned, big-endian, unless stated.
-* `uN` denotes an N-bit unsigned integer. `text` is UTF-8 without NUL. `bytes` is an octet string.
+* `uN` denotes an N-bit unsigned integer. `text` is valid UTF-8 (NUL is permitted). `bytes` is an octet string.
 * Maps in this document use text keys. Unless stated otherwise, a receiver MUST ignore unknown map keys and MUST reject a missing REQUIRED key with `bad_request` (stream) or `protocol_error` (connection).
 
 ## 3. Transport
@@ -305,3 +305,22 @@ Generated from `snp/ops.json`: see `docs/SNP-OPS.md`.
 Auth: `K = SHA-256("sk-test")`; with `nonce = 00…00` (32 octets), `cnonce = 11…11` (16 octets), `spki = 22…22` (32 octets), `proof = HMAC-SHA256(K, "SNP/1 client" ‖ nonce ‖ cnonce ‖ spki)`. Implementations MUST include this vector in their tests Expected `K = f3abf2a6cc4f00987743db5f544ba345b4899ae31f326d8ee9c4816de153c9e0` and expected client `proof = 5b2fc2282c3e222fcbeb00e7b86d643140edad01fbe84ed8c8b473418c797b3f` (computed with OpenSSL, independent of both implementations).
 
 Framing: the frame `53 4E 05 00 00 00 00 00 00 00 00 08 01 02 03 04 05 06 07 08` is a valid PING on stream 0.
+
+## 13. Clarifications (normative)
+
+These points were unspecified in earlier drafts of this document and were fixed by the two reference implementations; independent implementations MUST behave identically.
+
+1. **No fragmentation.** A `MSG` payload MUST NOT exceed the stream's available credit window or `max_frame`; `END` and `ERROR` payloads MUST NOT exceed `max_frame`. A server whose unary result would exceed `max_frame` MUST answer `ERROR{too_large, status 413}`; any other oversized `MSG` is likewise `too_large`. For `chat.generate`, a final `done` event whose message does not fit is sent as `{type:"done", message:{…, content:"", reasoning:"", truncated:true}}`; the client MUST then read the persisted message with `chat.conversation.get`. `OPEN` is itself bounded by `max_frame`, so `args` larger than `max_frame` cannot be sent; the 4 MiB limit in §11 is an upper bound on what a server accepts, not a transfer mechanism.
+2. **Subscription topics.** On `event.subscribe`, an absent `topics` key means all events; `topics: []` means none. In all-events mode a client `MSG{unsubscribe:[t]}` adds an exclusion and `MSG{subscribe:[t]}` removes one. The server's first `MSG` is `{type:"hello", data:{api_version}}`. SNP defines no heartbeat event; liveness is PING/PONG (§9). Adapters that must present a WebSocket-style heartbeat synthesise it locally.
+3. **`file.get`.** `MSG{meta}` contains `mime, size` (total file size), `start`, `end` (inclusive end of the served range), `length` (octets that follow) and optionally `name`. For an empty file: `size 0, start 0, end 0, length 0`.
+4. **Implicit close.** A server `END` or `ERROR` closes the stream completely; the client need not half-close first.
+5. **Long-running operations.** Operations whose names begin with `llm.`, `paintbrush.`, `runtime.`, `model.`, `worker.`, `hf.`, `gateway.` or `experiment.`, plus `generation.bulk` and `chat.conversation.import`, are long-running: servers apply no default deadline, and clients SHOULD send an explicit `deadline_ms`. Every other `unary` operation has a server default deadline of 60 s.
+6. **Misdirected frames.** A client `MSG` on a stream that is not a `subscribe` stream, or `DATA` on a stream that is not an `upload`, is a stream-level `bad_request`.
+7. **Features.** `HELLO_OK.features` is the intersection of the features offered by both sides.
+8. **Authentication of all operations.** Every operation, including `system.health`, requires a completed `AUTH`.
+9. **Zero window increments.** `WINDOW{inc:0}` MUST be ignored.
+10. **After GOAWAY.** A server that has sent `GOAWAY{shutdown}` disconnects without reply on any further `OPEN`. A `GOAWAY` without `last_stream_id` carries no claim about which streams were processed: the receiver MUST NOT assume any stream was unprocessed (and therefore MUST NOT retry non-idempotent operations without an idempotency key).
+11. **Slot accounting.** A client MAY release a stream slot at the moment it sends `CANCEL`; a server MAY keep counting the slot until it has sent the stream's terminal frame, so a client that reopens immediately can receive `resource_exhausted` (retryable).
+12. **Text results.** `chat.conversation.export` with `format=md` returns a CBOR text string as `result`; with `format=json` a map.
+13. **Argument naming.** Arguments are named after the handler parameters: the request body is under `body`, except for `settings.patch`, whose body is under `patch`.
+14. **Argument typing.** Catalogue entries carry no parameter types. Query-style parameters defined by the engine as integers or booleans (`limit`, `favorite`, `trash`, `permanent`, `presets`, `since`, `until`, `before`) MUST be sent as CBOR integers, booleans or floats, not as text; an adapter converting from text query strings coerces by name.
