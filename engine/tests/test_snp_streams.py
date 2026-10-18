@@ -666,11 +666,13 @@ async def test_interrupted_upload_by_cancel_or_disconnect_is_discarded(snp):
     assert not list(snp.st.cfg.uploads_dir.iterdir())
 
 
+@pytest.mark.limits(initial_window=16384)
 async def test_upload_flow_control_overrun_is_a_protocol_error(snp):
     c = await snp.client()
     s = await c.open("file.upload", {"name": "a.txt"})
-    for _ in range(3):  # 3 x 100 KB > the 262 144 octet stream window, sent without waiting for WINDOW
-        c.raw.send(sc.DATA, s.id, b"t" * 100_000)
+    # One frame larger than the whole stream window: an overrun however quickly the server consumes data
+    # (several smaller frames would race with the server's window updates).
+    c.raw.send(sc.DATA, s.id, b"t" * 20_000)
     await c.raw.flush()
     await asyncio.wait_for(c.goaway_event.wait(), 5)
     assert c.goaway["code"] == "protocol_error"
