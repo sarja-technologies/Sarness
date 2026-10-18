@@ -20,7 +20,7 @@ tauri-plugin-opener = "2.7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
-axum = { version = "0.8", features = ["ws"] }
+axum = { version = "0.8", features = ["ws", "multipart"] }
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["fs"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
@@ -44,9 +44,17 @@ similar = "2"
 ignore = "0.4"
 regex = "1"
 libc = "0.2"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+rustls-pki-types = "1"
+rustls-native-certs = "0.8"
+hmac = "0.12"
+socket2 = "0.6"
+base64 = "0.22"
 
 [dev-dependencies]
 tempfile = "3"
+rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring", "pem"] }
 
 [profile.release]
 codegen-units = 1
