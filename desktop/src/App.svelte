@@ -19,6 +19,8 @@
   import { loadJobs, wireJobEvents } from './lib/stores/jobs.svelte';
   import { loadModels, wireModelEvents } from './lib/stores/models.svelte';
   import { loadProjects, wireProjectEvents } from './lib/stores/projects.svelte';
+  import ExperimentsView from './lib/experiments/ExperimentsView.svelte';
+  import { enterExperiments, loadCatalogue, wireExperimentEvents } from './lib/experiments/store.svelte';
 
   const order: View[] = ['workspace', 'library', 'models', 'system', 'settings'];
   let visited = $state<Record<string, boolean>>({ [prefs.view]: true });
@@ -26,6 +28,11 @@
 
   $effect(() => {
     visited[prefs.view] = true;
+    // Work remembers its last view, so the Work | Experiments switch returns to it.
+    if (prefs.view !== 'experiments' && prefs.workView !== prefs.view) {
+      prefs.workView = prefs.view;
+      persistPrefs();
+    }
   });
 
   // (Re)load engine data whenever we come online with a (new) server.
@@ -33,7 +40,7 @@
     const key = `${conn.state}:${conn.activeId}`;
     if (conn.state === 'online' && loadedFor !== key) {
       loadedFor = key;
-      Promise.allSettled([loadJobs(), loadModels(), loadProjects(), syncServerConversations()]);
+      Promise.allSettled([loadJobs(), loadModels(), loadProjects(), syncServerConversations(), loadCatalogue()]);
     }
   });
 
@@ -42,11 +49,17 @@
     wireJobEvents();
     wireModelEvents();
     wireProjectEvents();
+    wireExperimentEvents();
     initConnection();
   });
 
   function keys(e: KeyboardEvent) {
     const n = Number(e.key);
+    if (e.altKey && !e.ctrlKey && !e.metaKey && n === order.length + 1) {
+      enterExperiments();
+      e.preventDefault();
+      return;
+    }
     if (e.altKey && !e.ctrlKey && !e.metaKey && n >= 1 && n <= order.length) {
       prefs.view = order[n - 1];
       persistPrefs();
@@ -96,6 +109,7 @@
       {#if visited.library}<section class="view" class:hidden={prefs.view !== 'library'}><Library active={prefs.view === 'library'} /></section>{/if}
       {#if visited.models}<section class="view" class:hidden={prefs.view !== 'models'}><Models active={prefs.view === 'models'} /></section>{/if}
       {#if visited.settings}<section class="view" class:hidden={prefs.view !== 'settings'}><Settings /></section>{/if}
+      {#if visited.experiments}<section class="view" class:hidden={prefs.view !== 'experiments'}><ExperimentsView /></section>{/if}
     </main>
     <StatusBar />
   </div>
