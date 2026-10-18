@@ -15,7 +15,7 @@ powered by your own GPU server.
 desktop/   Tauri app (src/ = Svelte UI, src-tauri/ = Rust core: proxy, tunnels, keyring, installer)
 engine/    Sarness Engine (sarness_engine/ package, tests/)
 scripts/   install-engine.sh (server), setup-dev.sh, dev.sh, test.sh, build.sh, package-engine.sh
-docs/      ARCHITECTURE.md · API.md · WORKFLOW_FORMAT.md · DEPLOYMENT.md · MODELS.md · DEVELOPMENT.md
+docs/      ARCHITECTURE.md · API.md · WORKFLOW_FORMAT.md · DEPLOYMENT.md · MODELS.md · DEVELOPMENT.md · EXPERIMENTS.md
 dist/      build output (.deb, .rpm, .AppImage, engine bundle, SHA256SUMS)
 ```
 
@@ -62,6 +62,14 @@ video with metadata, filters, trash), Models (installed, catalog, Hugging Face i
 (GPU/VRAM/RAM, the job queue with cancel/retry) and Settings. There are no separate Chat/Code/Image/Video
 pages.
 
+**Work | Experiments:** the switch at the top of the sidebar moves between your normal work and
+**Experiments**, a space for interactive features (Alt+6). Entering Experiments shows the experiment
+selection screen first. Experiments you have open keep their state while you are back in Work. The first
+experiment is **God's Paintbrush**: paint a landscape with material brushes (sky, water, mountains, trees, …)
+and the server turns it into a photorealistic landscape. A live GauGAN preview updates while you paint
+(~70 ms on an RTX 4070 Ti), and a refined photo follows when you pause (~1.4 s). Paintings are saved on the
+server, and results go to the Library. See [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md).
+
 **Optional multi-conversation layout:** the layout button (top right) offers one, two (side by side or
 stacked), three, or four (2×2) independent conversations, each with the same prompt box. Drag dividers to
 resize, drag a header grip to swap, minimise/maximise/close. Default is one conversation. Layout and every
@@ -69,7 +77,7 @@ conversation (mode, draft, settings, generations) persist across restarts; jobs 
 while you work elsewhere.
 
 Keyboard: `Ctrl+1…4` choose Chat/Code/Image/Video (←/→ also move between modes) · `Enter` send ·
-`Shift+Enter` new line · `Esc` close settings · `Ctrl+Shift+O` new conversation · `Alt+1…5` sections ·
+`Shift+Enter` new line · `Esc` close settings · `Ctrl+Shift+O` new conversation · `Alt+1…5` sections · `Alt+6` Experiments ·
 `Ctrl+Shift+1…4` focus a pane · `Ctrl+Shift+M` maximise/restore a pane · `Ctrl+B` sidebar.
 
 ## Where things are stored

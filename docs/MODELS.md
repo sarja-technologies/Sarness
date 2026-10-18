@@ -31,6 +31,17 @@ Run through the Sarness engine on the server, which forwards jobs to the existin
 | Qwen3.5 9B via gateway `/v1` (Ollama) | streaming chat, thinking off / on | ≈77 tok/s both; thinking off uses `reasoning_effort: "none"` |
 | Qwen-Image 2.1 Turbo (`gw:qwen-image-2.1-turbo`) | — | Listed and wired (text-to-image + reference edit); not run through Sarness yet |
 
+## Experiments: God's Paintbrush (server RTX 4070 Ti)
+
+These models are used only by the God's Paintbrush experiment and are installed from its own model panel, not
+from the Catalog. Provenance, licences, candidate comparison and full measurements are in
+[EXPERIMENTS.md](EXPERIMENTS.md).
+
+| Model | Use | Result |
+|---|---|---|
+| GauGAN/SPADE Labels2Landscapes 512 (community, **CC BY-NC-SA 4.0**) | Live preview from the painted label map | 72 ms wall / 62 ms GPU at 768×512, 1.1 GB peak; cold start 3.5 s |
+| SD 1.5 + ControlNet 1.1 Seg (fp16, OpenRAIL-M) | Photographic refine (img2img over the live frame) | 1.36 s at 768×512 with 20 steps, 3.9 GB peak; 8.3 s at 1536×1024 |
+
 ## Installed but not exercised
 
 | Model | Status |

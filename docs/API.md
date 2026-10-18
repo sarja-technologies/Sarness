@@ -125,6 +125,31 @@ fps, steps, guidance, seed, flow_shift, start_image, end_image, memory_mode
 | GET | `/v1/files/{id}` | File content (Range supported, immutable caching). |
 | POST | `/v1/uploads` | Multipart upload; content is sniffed (PNG/JPEG/WebP/GIF/BMP, MP4/WebM/MOV, text/JSON/CSV/PDF), images are verified. 512 MB limit. |
 
+## Experiments
+
+Interactive experiments (see [EXPERIMENTS.md](EXPERIMENTS.md)). Added in API 1.1.
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/v1/experiments` | Registered experiments: `id, name, tagline, description, version, capabilities[], availability {state: ready\|needs_install\|unavailable, live, refine, reasons[]}, gpu_active`. |
+| GET | `/v1/experiments/{id}` | Full status of one experiment (same as its own `/status`). |
+| GET / POST | `/v1/experiments/{id}/documents` | Saved documents (newest first, no `data`) / create `{title, data, thumbnail?, project_id?}`. 8 MB data and 512 KB thumbnail limits. |
+| GET / PUT / DELETE | `/v1/experiments/{id}/documents/{doc_id}` | Full document / update `{title?, data?, thumbnail?, project_id?}` / delete. |
+| POST | `/v1/experiments/{id}/documents/{doc_id}/duplicate` | `{title?}` → the copy. |
+
+God's Paintbrush (`/v1/experiments/gods-paintbrush/…`):
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/status` | Materials (index, id, label, colour, COCO-Stuff and ADE20K mapping, `live`/`refine` support, note), model components with licence/source/installed, canvas sizes, refine limits and defaults, runtime (worker alive, loaded stages, VRAM, GPU busy reason, recent latency). |
+| POST | `/render` | `{session, kind: "live"\|"refine", mask: {width, height, encoding: "deflate"\|"raw", data}, seed?, quality?, creativity?, control?, scale?, prompt?}` → `{render_id, image (data URL), timings, peak_vram_mb, coverage, …}`. `409` superseded/cancelled, `503` GPU busy, `422` invalid mask. |
+| POST | `/cancel` | `{session}` — cancel queued and running renders of that canvas. |
+| POST | `/warmup` · `/release` | `{refine?: bool}` load models ahead of time / `{level: "refine"\|"all"}` free VRAM. |
+| POST | `/install` · `/install/cancel` | `{components?: [id]}` — download the pinned weights in the background (`experiment.install` events). |
+| POST | `/renders/{render_id}/save` | `{project_id?, folder_id?, document_id?}` — store the render as a Library generation (with its mask and parameters). |
+| POST | `/renders/{render_id}/export` | Write the render to a file → `{file_id, url, mime, name}` (the desktop saves it with `export_file`). |
+| POST | `/mask/export` | `{mask, format: "index"\|"coco"\|"ade"\|"color"}` → PNG file and legend. |
+
 ## Events — `GET /v1/events` (WebSocket)
 
 Messages are `{"type": "...", "ts": <unix>, "data": {...}}`. A `heartbeat` is sent
@@ -136,4 +161,5 @@ node_id, status, elapsed_s?, message?}, generation.created, generation.updated,
 generations.changed, download.created, download.updated, download.progress,
 models.changed, llm.status, worker.status, worker.crashed, runtime.progress,
 runtime.installed, runtime.failed, system.stats (every 2 s while subscribed),
-projects.changed, settings.changed`.
+projects.changed, settings.changed, experiment.status, experiment.progress {experiment,
+render_id, session, step, total}, experiment.install, experiment.documents {experiment, document_id, action}`.
