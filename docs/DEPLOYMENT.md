@@ -35,7 +35,7 @@ The two listeners are independent. The engine MUST keep serving HTTP when SNP fa
 The engine does not manage packet filters. A host with a default-deny inbound policy MUST be given an explicit rule for 8744/tcp, scoped to the narrowest source range that contains the clients, e.g.
 
 ```
-ufw allow from 192.168.20.0/24 to any port 8744 proto tcp comment 'Sarness SNP (LAN only)'
+ufw allow from 10.0.0.0/24 to any port 8744 proto tcp comment 'Sarness SNP (LAN only)'
 ```
 
 Neither port is intended for exposure to untrusted networks. SNP resists unauthenticated resource exhaustion by construction (§11 of SNP.md: pre-authentication frames ≤ 4096 octets, 10 s handshake deadline, per-address connection and failure limits) but it is not a substitute for network-level access control.

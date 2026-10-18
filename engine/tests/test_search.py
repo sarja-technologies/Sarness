@@ -43,7 +43,7 @@ def test_page_text_cannot_close_the_source_block():
 
 
 # ---------------------------------------------------------------- safe fetching
-@pytest.mark.parametrize("ip,public", [("8.8.8.8", True), ("127.0.0.1", False), ("10.1.2.3", False), ("192.168.20.172", False),
+@pytest.mark.parametrize("ip,public", [("8.8.8.8", True), ("127.0.0.1", False), ("10.1.2.3", False), ("192.168.1.50", False),
                                        ("169.254.169.254", False), ("::1", False), ("::ffff:127.0.0.1", False), ("fd00::1", False),
                                        ("100.64.0.1", False), ("0.0.0.0", False), ("not-an-ip", False)])
 def test_public_ip_classification(ip, public):

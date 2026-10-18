@@ -33,7 +33,7 @@ def mode(p) -> int:
 
 
 def test_identity_is_created_private_and_well_formed(tmp_path):
-    i = ident.load_or_create(tmp_path, "10.1.2.3", ["engine.example.org", "192.168.20.172"])
+    i = ident.load_or_create(tmp_path, "10.1.2.3", ["engine.example.org", "192.168.1.50"])
     assert mode(tmp_path / "snp") == 0o700 and mode(i.key_path) == 0o600 and mode(i.cert_path) == 0o600
     assert i.pin.startswith("sha256:") and len(i.pin) == 7 + 64 and i.pin == spki_pin(i.cert_path.read_bytes())
     cert = x509.load_pem_x509_certificate(i.cert_path.read_bytes())
@@ -43,7 +43,7 @@ def test_identity_is_created_private_and_well_formed(tmp_path):
     assert cert.not_valid_after_utc - cert.not_valid_before_utc <= dt.timedelta(days=3653)
     san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
     assert set(san.get_values_for_type(x509.DNSName)) == {"localhost", "engine.example.org"}
-    assert {str(a) for a in san.get_values_for_type(x509.IPAddress)} == {"127.0.0.1", "::1", "10.1.2.3", "192.168.20.172"}
+    assert {str(a) for a in san.get_values_for_type(x509.IPAddress)} == {"127.0.0.1", "::1", "10.1.2.3", "192.168.1.50"}
     assert b"PRIVATE" not in i.cert_path.read_bytes()
 
 
