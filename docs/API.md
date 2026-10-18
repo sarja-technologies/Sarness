@@ -1,6 +1,6 @@
 # Sarness Engine API v1
 
-Base URL: `http://<host>:8742` (default port). All endpoints are under `/v1`.
+Base URL: `http://<host>:8742` (default port). All endpoints are under `/v1`. The same operations are available over the native binary protocol SNP/1 ([SNP.md](SNP.md), catalogue in [SNP-OPS.md](SNP-OPS.md)); the data model (arguments, results, event shapes) is identical in both interfaces, and every route here has exactly one SNP operation.
 Interactive OpenAPI docs: `GET /v1/docs` (requires a token in the browser's
 `Authorization` header, or use `curl`).
 
@@ -83,6 +83,44 @@ nothing is ever overwritten. SSE events (each `data: <json>`):
 
 `params`: `temperature, top_p, top_k, min_p, repeat_penalty, presence_penalty,
 frequency_penalty, max_tokens, seed, ctx, gpu_layers, thinking`.
+
+### Reasoning
+
+`delta.reasoning` carries only reasoning the model itself emitted: the provider's `reasoning_content` /
+`reasoning` field, or, when the provider leaves one leading `<think>…</think>` block inside `content`, the text
+of that block (delimiters removed; splitting is chunk-boundary independent and is disabled for the remainder of
+a stream once native reasoning appears). Nothing is synthesised and no other answer text is reclassified. A
+model without exposed reasoning yields `reasoning: ""` throughout. Reasoning is persisted in the message's
+`reasoning` field, is returned by `GET /conversations/{id}` and is never included in the prompt of later turns.
+`params.thinking` is forwarded to templates that support it (`chat_template_kwargs.enable_thinking`,
+`reasoning_effort`).
+
+### Web search
+
+Request fields of `generate` (Chat only; `/v1/agent/completions` ignores them): `web_search: true|false`
+overrides the engine policy `search_policy` (`manual`: only when `true`; `always`: unless `false`). The query is
+the text of the user turn being answered, whitespace-normalised and truncated to 300 characters; turns without
+text are not searched. Additional events, emitted before generation starts:
+
+```
+{"type":"search","phase":"started","query":"…"}
+{"type":"search","phase":"results","query":"…","provider":"duckduckgo","error":null,
+ "sources":[{"n":1,"title":"…","url":"https://…","snippet":"…","domain":"…","fetched":true}, …]}
+{"type":"search","phase":"unavailable","query":"…","provider":"…","error":"reason","sources":[]}
+```
+
+The same object (`query, provider, error, sources`) is stored in the assistant message under `stats.search`.
+Page text is not returned to clients. Sources are numbered from 1; a client MUST link a `[n]` citation only if
+`n` names a returned source. A `Stop` during search ends the turn with status `stopped` before any model call.
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/v1/search/status` | `{provider, configured, problem, policy, keyless}` for the effective provider. |
+| POST | `/v1/search/test` | `{query?}` → `{…status, ok, error, results[{title,url}]}`; one real provider query, no page fetching. |
+
+Settings: `search_provider` (`auto|searxng|duckduckgo|brave`), `search_searxng_url`, `search_brave_key`
+(write-only), `search_policy` (`manual|always`), `search_max_results` (1–10), `search_fetch_pages` (0–5),
+`search_timeout_s`. Invalid choices return `400`.
 
 ## Jobs and workflows
 
