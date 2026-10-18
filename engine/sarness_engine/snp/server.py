@@ -604,11 +604,24 @@ class Connection:
 
     # ---- stream execution
     def _finish(self, s: Stream, ftype: int, body: dict[str, Any]) -> None:
-        """Sends the terminal frame and closes the stream (idempotent)."""
+        """Sends the terminal frame and closes the stream (idempotent). END and ERROR are bounded by
+        ``max_frame`` like every frame: a result that does not fit becomes ERROR too_large."""
         if s.closed:
             return
         s.closed = True
-        self.send_map(ftype, s.id, body)
+        try:
+            payload = cbor.dumps(body)
+        except cbor.CborError as exc:
+            log.error("unencodable result of %s: %s", s.op.name, exc)
+            ftype, payload = fr.ERROR, cbor.dumps(OpError("internal", "unencodable result").wire())
+        if len(payload) > self.max_frame:
+            if ftype == fr.ERROR:
+                body = {k: v for k, v in body.items() if k != "detail"}
+                payload = cbor.dumps(body)
+            else:
+                err = OpError("too_large", f"result of {len(payload)} octets exceeds max_frame {self.max_frame}")
+                ftype, payload = fr.ERROR, cbor.dumps(err.wire())
+        self.write(fr.pack_frame(ftype, s.id, payload))
         self.streams.pop(s.id, None)
         pending = 0
         while not s.inbox.empty():

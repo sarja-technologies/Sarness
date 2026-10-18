@@ -225,8 +225,12 @@ async def test_backpressure_reaches_the_model_stream(snp, model):
     assert model.yielded == len(model.script)
     # The finished reply (3 MB) cannot fit a 256 KiB window: 'done' arrives without the text.
     assert last["type"] == "done" and last["message"]["truncated"] is True and last["message"]["content"] == ""
-    stored = (await c.call("chat.conversation.get", {"cid": conv["id"]}))["messages"][-1]
+    stored = snp.st.db.one("SELECT status, content FROM messages WHERE id = ?", [last["message"]["id"]])
     assert stored["status"] == "complete" and len(stored["content"]) == 3_000_000
+    # And a result that does not fit max_frame is a stream error, not an invalid frame.
+    with pytest.raises(sc.SnpError) as e:
+        await c.call("chat.conversation.get", {"cid": conv["id"]})
+    assert e.value.code == "too_large"
 
 
 @pytest.mark.limits(stall_s=0.5)
