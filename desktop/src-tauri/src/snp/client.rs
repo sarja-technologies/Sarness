@@ -1153,6 +1153,9 @@ impl SnpClient {
 }
 
 async fn attempt_once(conn: &Arc<Conn>, op: &str, args: Value, idem: Option<&str>, deadline: Option<Duration>) -> Result<Value, SnpError> {
+    if deadline.is_some_and(|d| d.as_millis() == 0) {
+        return Err(SnpError::DeadlineExceeded); // the server rejects deadline_ms = 0
+    }
     let deadline_ms = deadline.map(|d| d.as_millis().min(u32::MAX as u128) as u32);
     let mut s = conn.open(op, args, idem, deadline_ms).await?;
     let run = async {

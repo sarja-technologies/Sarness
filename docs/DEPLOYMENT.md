@@ -120,7 +120,7 @@ echo | openssl s_client -connect HOST:8744 -alpn snp/1 -tls1_3 2>/dev/null \
 
 Rotation: stop the engine, delete `server.key` and `server.crt`, start it, and re-pin every client. A client MUST treat the new pin as an identity change (§7).
 
-Trust on first use is supported only as an explicit operator action: *Fetch identity* opens one connection that sends no credentials, displays the presented pin, and stores it only after confirmation. CA-issued certificates are supported by leaving the pin empty and supplying `snp_server_name`; the chain and name are then verified against the system trust store.
+Trust on first use is supported only as an explicit operator action: *Fetch identity* opens one connection that sends no credentials, displays the presented pin, and stores it only after confirmation. The client verifies CA-issued certificates when the pin is left empty and `snp_server_name` is supplied (chain and name against the system trust store). **The engine, however, only serves the certificate it generates itself** in this release: it regenerates `server.crt` whenever its SAN set differs from the expected one and has no setting for an operator-supplied certificate. Serving a CA certificate is therefore not yet possible; use pinning.
 
 ## 7. Failure states (SNP)
 
@@ -133,7 +133,7 @@ Trust on first use is supported only as an explicit operator action: *Fetch iden
 | Self-signed chain with no pin | `UntrustedCertificate` | no | pin the identity or use a CA certificate |
 | No common version | `UnsupportedVersion{supported}` | no | upgrade the older side |
 | Bad token (`unauthenticated`) | `Unauthenticated` | **no** | correct the token; retrying is a lock-out risk |
-| 20 failures/minute from one source | `RateLimited` | after back-off | wait; investigate the source |
+| 20 failures/minute from one source | `RateLimited` (wrong proof only) | after back-off | wait; investigate the source; a correct proof is still accepted |
 | Server proof invalid | `ServerProof` | **no** | the peer does not hold the token verifier: treat as an impersonation attempt |
 | Malformed or oversized frame, window overflow | `Protocol`, `Limit` | after back-off | report; indicates a defective peer |
 | Idle timeout, reset, engine restart | `ConnectionLost` | yes | none (streams in flight are cancelled; chat replies are kept as `stopped`) |
@@ -142,7 +142,7 @@ SNP never falls back to HTTP after any of the above, and HTTP never falls back t
 
 ## 8. Authentication model
 
-The engine stores only `token_sha256`. HTTP compares `SHA-256(presented token)` against it. SNP uses the same 32 octets as the HMAC key; the raw token never crosses the network in either transport (SNP) and is never stored by the engine. A reader of `config.json` can therefore authenticate over SNP (and forge file signatures with `signing_key`) but cannot recover the token or use it elsewhere. `config.json` MUST remain mode 0600. Rotating the token invalidates both transports.
+The engine stores only `token_sha256`. HTTP compares `SHA-256(presented token)` against it. SNP uses the same 32 octets as the HMAC key; the raw token never crosses the network in either transport (SNP) and is never stored by the engine. A reader of `config.json` (or of a backup containing it) can therefore authenticate over SNP, with the same reach as the token itself (file transfer, model installation, chat, jobs), and can forge file signatures with `signing_key`; it cannot recover the token or use it on another service. Protect `config.json` and engine backups accordingly. `config.json` MUST remain mode 0600. Rotating the token invalidates both transports.
 
 HTTP additionally rate-limits failures (20 per minute per address, status 429) and never logs query strings. The engine never enables `trust_remote_code`; uploads are content-sniffed and size-limited; paths resolve only inside `<data_dir>`.
 

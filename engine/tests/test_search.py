@@ -64,6 +64,25 @@ def _resp(body=b"<p>hello hello hello hello hello hello</p>", ctype="text/html",
     return (f"HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {len(body)}\r\nConnection: close\r\n").encode() + extra + b"\r\n" + body
 
 
+def test_fetch_asks_for_uncompressed_bodies(monkeypatch):
+    async def allow(host, port):
+        return "127.0.0.1"
+    monkeypatch.setattr(safe_http, "resolve_public", allow)
+    seen = []
+
+    async def go():
+        async def conn(reader, writer):
+            seen.append((await reader.readuntil(b"\r\n\r\n")).lower())
+            writer.write(_resp())
+            await writer.drain()
+            writer.close()
+        srv = await asyncio.start_server(conn, "127.0.0.1", 0)
+        async with srv:
+            await safe_http.fetch_text(f"http://example.test:{srv.sockets[0].getsockname()[1]}/", 3)
+    asyncio.run(go())
+    assert b"accept-encoding: identity" in seen[0]
+
+
 def test_fetch_refuses_loopback_and_private_hosts():
     async def go():
         srv, port = await _serve(lambda: _resp())

@@ -19,6 +19,7 @@ from .safe_http import FetchError, fetch_text
 log = logging.getLogger("sarness.search")
 
 PER_PAGE_CHARS = 3500
+EXTRACT_INPUT_CHARS = 600_000
 TOTAL_CHARS = 12000
 HARD_LIMIT_RESULTS = 10
 HARD_LIMIT_FETCH = 5
@@ -157,7 +158,8 @@ class WebSearch:
             except (FetchError, httpx.HTTPError) as exc:
                 log.info("page not read (%s): %s", s.url, exc)
                 return
-            _title, text = extract(html, PER_PAGE_CHARS)
+            # Parsing untrusted markup must not stall the event loop (which also carries SNP keep-alives).
+            _title, text = await asyncio.to_thread(extract, html[:EXTRACT_INPUT_CHARS], PER_PAGE_CHARS)
             if text:
                 s.text, s.fetched = text, True
 

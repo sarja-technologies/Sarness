@@ -47,7 +47,9 @@ async def resolve_public(host: str, port: int) -> str:
 async def fetch_text(url: str, timeout: float, *, max_bytes: int = MAX_BYTES) -> tuple[str, str, str]:
     """Returns ``(final_url, content_type, body_text)`` for an http(s) page of a text type."""
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=False,
-                                 headers={"User-Agent": USER_AGENT, "Accept": "text/html,text/plain;q=0.9,*/*;q=0.1"}) as client:
+                                 headers={"User-Agent": USER_AGENT, "Accept": "text/html,text/plain;q=0.9,*/*;q=0.1",
+                                          # No compression: a small compressed chunk must not expand past the byte cap.
+                                          "Accept-Encoding": "identity"}) as client:
         for _ in range(MAX_REDIRECTS + 1):
             parts = urlsplit(url)
             if parts.scheme not in ("http", "https") or not parts.hostname:
@@ -72,7 +74,7 @@ async def fetch_text(url: str, timeout: float, *, max_bytes: int = MAX_BYTES) ->
                 if ctype and ctype not in TEXT_TYPES:
                     raise FetchError(f"unsupported content type {ctype}")
                 chunks, size = [], 0
-                async for part in resp.aiter_bytes():
+                async for part in resp.aiter_raw():
                     size += len(part)
                     chunks.append(part)
                     if size >= max_bytes:

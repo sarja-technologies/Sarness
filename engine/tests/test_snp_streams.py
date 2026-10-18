@@ -676,3 +676,20 @@ async def test_upload_flow_control_overrun_is_a_protocol_error(snp):
     assert c.goaway["code"] == "protocol_error"
     await asyncio.wait_for(c.closed.wait(), 5)
     await wait_until(lambda: not list(snp.st.cfg.tmp_dir.glob("snp-upload-*")))
+
+
+async def test_credit_of_data_consumed_after_the_stream_closed_is_still_returned():
+    # An upload cancelled while a chunk was being written must not shrink the connection window for good.
+    from types import SimpleNamespace
+
+    from sarness_engine.snp.server import Stream
+
+    returned = []
+    conn = SimpleNamespace(limits=SimpleNamespace(initial_window=262144), credit_connection=returned.append,
+                           send_window_update=lambda *a: returned.append(("stream", a)))
+    s = Stream(conn, 1, SimpleNamespace(), {}, None, None)
+    s.closed = True
+    s.consumed(60000)
+    assert returned == [60000]
+    s.consumed(0)
+    assert returned == [60000]

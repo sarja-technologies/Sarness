@@ -39,6 +39,7 @@ CATALOGUE_PATH = Path(__file__).with_name("ops.json")
 TELEMETRY = frozenset({"system.stats", "job.progress", "job.preview", "download.progress"})
 # Operations that legitimately run longer than the default unary deadline (spec 6.5).
 LONG_RUNNING_PREFIXES = ("llm.", "paintbrush.", "runtime.", "model.", "worker.", "hf.", "gateway.", "experiment.")
+LONG_RUNNING_NAMES = frozenset({"generation.bulk", "chat.conversation.import"})  # spec 13.5
 
 CODE_STATUS = {"bad_request": 400, "unauthenticated": 401, "not_found": 404, "conflict": 409, "unknown_op": 404,
                "too_large": 413, "rate_limited": 429, "resource_exhausted": 503, "cancelled": 499,
@@ -168,7 +169,7 @@ class OpDef:
 
     @property
     def long_running(self) -> bool:
-        return self.name.startswith(LONG_RUNNING_PREFIXES)
+        return self.name.startswith(LONG_RUNNING_PREFIXES) or self.name in LONG_RUNNING_NAMES
 
 
 def resolve_handler(path: str) -> Callable:
@@ -568,8 +569,10 @@ async def file_upload(ctx: Any, args: dict[str, Any]) -> Any:
                 if nbytes:
                     ctx.consumed(nbytes)
                 raise OpError("too_large", "upload too large")
-            await asyncio.to_thread(fh.write, value)
-            ctx.consumed(nbytes)
+            try:
+                await asyncio.to_thread(fh.write, value)
+            finally:
+                ctx.consumed(nbytes)  # even on cancel or a write error, so no credit is lost
         fh.close()
         if declared is not None and declared != received:
             raise OpError("bad_request", f"declared size {declared} does not match the {received} octets received")

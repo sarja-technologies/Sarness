@@ -69,7 +69,7 @@ Every SNP message is one frame:
 | 0x11 | MSG | both | n | CBOR value (map) |
 | 0x12 | DATA | both | n | raw octets |
 | 0x13 | END | both | n | CBOR map (may be empty payload = `{}`) |
-| 0x14 | ERROR | S→C | n (or 0) | CBOR map |
+| 0x14 | ERROR | S→C | n (never 0) | CBOR map |
 | 0x15 | CANCEL | C→S | n | CBOR map (may be empty payload = `{}`) |
 | 0x16 | WINDOW | both | 0 or n | CBOR map |
 
@@ -120,7 +120,7 @@ There is no "insecure" mode. A client that has neither a pin nor a CA-verified c
 
 ### 5.2 HELLO / HELLO_OK
 
-`HELLO`: `{ "versions": [u8…] (REQUIRED, non-empty, ≤ 8 entries), "client": text (≤ 64), "features": [text…] (≤ 32), "max_frame": u32 }`
+`HELLO`: `{ "versions": [u8…] (REQUIRED, non-empty, ≤ 8 entries), "client": text (≤ 64), "features": [text…] (≤ 32), "max_frame": u32 (≥ 16384) }`
 
 The server selects the highest version it supports from `versions`. If none: send `GOAWAY{code:"unsupported_version", supported:[…]}` and close.
 
@@ -153,7 +153,7 @@ Let `K` be the 32 octets `SHA-256(UTF-8(api_token))`. (The engine stores only th
 
 The server MUST verify the client proof in constant time. The client MUST verify the server proof in constant time and MUST close the connection if it is wrong; this authenticates the server to the client even under trust-on-first-use and binds both proofs to the certificate actually in use, preventing relay to another server. `nonce` MUST be fresh random per connection; `cnonce` MUST be fresh random per connection.
 
-On failure the server MUST send `GOAWAY{code:"unauthenticated"}` and close, after a delay of at least 250 ms × (consecutive failures from that source address, capped at 8), and MUST apply a lock-out of at most 20 failed attempts per source address per rolling minute (further attempts: `GOAWAY{code:"rate_limited"}` without evaluating the proof). Failure reasons MUST NOT distinguish "unknown method" from "bad proof" beyond `unauthenticated`. A client MUST NOT retry authentication automatically after `unauthenticated`, and MUST NOT fall back to any other transport.
+On failure the server MUST send `GOAWAY{code:"unauthenticated"}` and close, after a delay of at least 250 ms × (number of failures from that source address within the last 60 s, capped at 8). Per source address it MUST throttle failed attempts to at most 20 per rolling minute: once that count is reached, a further *incorrect* proof is answered `GOAWAY{code:"rate_limited"}` without delay. The server MUST NOT refuse a correct proof because of the failure count (the key is 256 bits, so a lock-out serves resource protection, not guess prevention, and refusing correct proofs would let anyone behind a shared source address — an SSH forward, a NAT — lock the legitimate client out). Failure reasons MUST NOT distinguish "unknown method" from "bad proof" beyond `unauthenticated`. A client MUST NOT retry authentication automatically after `unauthenticated`, and MUST NOT fall back to any other transport.
 
 Security note: because the engine stores `token_sha256`, an attacker who can read `config.json` can authenticate over SNP (as it could already forge file signatures with `signing_key`). It cannot recover the raw token. The file is mode 0600. Deployments that cannot accept this should restrict network exposure of the SNP port.
 
@@ -302,7 +302,7 @@ Generated from `snp/ops.json`: see `docs/SNP-OPS.md`.
 
 ### 12.2 Test vectors
 
-Auth: `K = SHA-256("sk-test")`; with `nonce = 00…00` (32 octets), `cnonce = 11…11` (16 octets), `spki = 22…22` (32 octets), `proof = HMAC-SHA256(K, "SNP/1 client" ‖ nonce ‖ cnonce ‖ spki)`. Implementations MUST include this vector in their tests Expected `K = f3abf2a6cc4f00987743db5f544ba345b4899ae31f326d8ee9c4816de153c9e0` and expected client `proof = 5b2fc2282c3e222fcbeb00e7b86d643140edad01fbe84ed8c8b473418c797b3f` (computed with OpenSSL, independent of both implementations).
+Auth: `K = SHA-256("sk-test")`; with `nonce = 00…00` (32 octets), `cnonce = 11…11` (16 octets), `spki = 22…22` (32 octets): `proof = HMAC-SHA256(K, "SNP/1 client" ‖ nonce ‖ cnonce ‖ spki)`. Implementations MUST include this vector in their tests Expected `K = f3abf2a6cc4f00987743db5f544ba345b4899ae31f326d8ee9c4816de153c9e0` and expected client `proof = 5b2fc2282c3e222fcbeb00e7b86d643140edad01fbe84ed8c8b473418c797b3f` (computed with OpenSSL, independent of both implementations). Server proof, frame and CBOR vectors are exercised by the reference test-suites rather than published here.
 
 Framing: the frame `53 4E 05 00 00 00 00 00 00 00 00 08 01 02 03 04 05 06 07 08` is a valid PING on stream 0.
 
@@ -324,3 +324,12 @@ These points were unspecified in earlier drafts of this document and were fixed 
 12. **Text results.** `chat.conversation.export` with `format=md` returns a CBOR text string as `result`; with `format=json` a map.
 13. **Argument naming.** Arguments are named after the handler parameters: the request body is under `body`, except for `settings.patch`, whose body is under `patch`.
 14. **Argument typing.** Catalogue entries carry no parameter types. Query-style parameters defined by the engine as integers or booleans (`limit`, `favorite`, `trash`, `permanent`, `presets`, `since`, `until`, `before`) MUST be sent as CBOR integers, booleans or floats, not as text; an adapter converting from text query strings coerces by name.
+15. **Message size.** The largest `MSG` a sender may emit is `min(max_frame, initial_window)`; larger ones are `too_large` (item 1).
+16. **Late frames and credit.** Payload octets of `MSG`/`DATA` frames that are discarded because their stream is closed, and octets still queued or in flight when a stream closes, MUST be credited back to the *connection* window (a discarding receiver that does not do so leaks credit until the connection stalls).
+17. **Deadlines.** `deadline_ms` MUST be ≥ 1 (0 is `bad_request`). An explicit `deadline_ms` applies to every operation mode; §6.5's exemption concerns only the server's *own default*.
+18. **Idempotency keys** are bound to the operation name only (not to its arguments) and to the authenticated principal; a client MUST NOT reuse a key for different arguments.
+19. **Integers.** CBOR integers are limited to the int64 range (§4.2); byte offsets and sizes above 2^63−1 are not representable and MUST NOT be used.
+20. **Dropped-event counter.** When events were dropped (§6.2) the server adds `"dropped": n` as a top-level key of the next delivered event map (beside `type`, `ts`, `data`), not inside `data`.
+21. **Lengths.** `ERROR.message` limits (1024) and `GOAWAY.message` (256) count Unicode scalar values.
+22. **Reconnect after `rate_limited`.** A client MAY reconnect, using the back-off of §10, since the lock-out cannot refuse a correct proof.
+23. **Failure-count window.** The failure delay of §5.3 is computed from a rolling 60 s window, not from an unbounded consecutive count.

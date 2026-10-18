@@ -195,7 +195,11 @@ class Stream:
 
     def consumed(self, nbytes: int) -> None:
         """Returns flow-control credit after inbound data has been processed."""
-        if self.closed or nbytes <= 0:
+        if nbytes <= 0:
+            return
+        if self.closed:
+            # The stream is gone, but the connection-level credit it consumed must still be returned.
+            self.conn.credit_connection(nbytes)
             return
         self.recv_window += nbytes
         self.conn.send_window_update(self.id, nbytes)
@@ -222,6 +226,7 @@ class Connection:
         self.goaway_sent = False
         self.closed = False
         self._waiters: list[asyncio.Future] = []
+        self._drain_lock = asyncio.Lock()  # concurrent StreamWriter.drain() is not safe on every supported Python
         self._keepalive: asyncio.Task | None = None
 
     # ---- low-level output
@@ -242,7 +247,8 @@ class Connection:
         if self.closed:
             raise ConnectionClosed
         try:
-            await self.writer.drain()
+            async with self._drain_lock:
+                await self.writer.drain()
         except (ConnectionError, OSError):
             raise ConnectionClosed from None
 
@@ -428,8 +434,6 @@ class Connection:
         auth = self._map(payload, "AUTH")
         if not all(k in auth for k in ("method", "cnonce", "proof")):
             raise ProtocolError("AUTH is missing a field")
-        if self.server.guard.locked(self.ip):
-            raise _AuthFailure("rate_limited")
         method, cnonce, proof = auth["method"], auth["cnonce"], auth["proof"]
         spki = self.server.identity.spki_sha256
         key = self.server.token_key()
@@ -439,6 +443,10 @@ class Connection:
             expected = hmac.new(key, b"SNP/1 client" + nonce + cnonce + spki, hashlib.sha256).digest()
             ok = hmac.compare_digest(proof, expected)
         if not ok:
+            # A lock-out only throttles wrong proofs: a correct one is never refused, so a noisy neighbour on the
+            # same source address (an SSH forward, a NAT) cannot lock the legitimate client out.
+            if self.server.guard.locked(self.ip):
+                raise _AuthFailure("rate_limited")
             log.warning("SNP authentication failed from %s", self.ip)
             raise _AuthFailure("unauthenticated", self.server.guard.failure(self.ip))
         self.server.guard.success(self.ip)

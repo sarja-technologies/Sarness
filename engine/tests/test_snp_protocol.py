@@ -196,16 +196,21 @@ async def test_auth_missing_field_is_protocol_error(snp):
 
 
 @pytest.mark.limits(auth_lockout=3, auth_fail_unit_s=0.0)
-async def test_lockout_after_repeated_failures(snp):
+async def test_lockout_throttles_wrong_proofs_but_never_refuses_a_correct_one(snp):
     for _ in range(3):
         r = await snp.raw()
         await r.hello()
         r.send(sc.AUTH, 0, sc.cenc({"method": "hmac-sha256", "cnonce": os.urandom(16), "proof": os.urandom(32)}))
         await goaway_then_close(r, "unauthenticated")
-    # Even a correct proof is now refused without being evaluated.
-    with pytest.raises(sc.SnpError) as e:
-        await snp.client()
-    assert e.value.code == "rate_limited"
+    # Locked out: further wrong proofs are answered rate_limited ...
+    r = await snp.raw()
+    await r.hello()
+    r.send(sc.AUTH, 0, sc.cenc({"method": "hmac-sha256", "cnonce": os.urandom(16), "proof": os.urandom(32)}))
+    await goaway_then_close(r, "rate_limited")
+    # ... but a neighbour behind the same source address cannot lock the real client out.
+    c = await snp.client()
+    assert (await c.call("system.health"))["status"] == "ok"
+    await c.close()
 
 
 @pytest.mark.limits(auth_fail_unit_s=0.2)

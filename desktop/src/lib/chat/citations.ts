@@ -14,7 +14,7 @@ export function linkCitations(html: string, sources: SearchSource[] | undefined)
   if (!byN.size) return html;
   let skip = 0;
   return html
-    .split(/(<[^>]+>)/)
+    .split(/(<(?:"[^"]*"|'[^']*'|[^>"'])*>)/)
     .map((part) => {
       if (part.startsWith('<')) {
         const m = /^<(\/?)(pre|code|a)\b/i.exec(part);

@@ -31,17 +31,6 @@ const OPS_JSON: &str = include_str!("../../../../engine/sarness_engine/snp/ops.j
 const MAX_JSON_BODY: usize = 64 * 1024 * 1024;
 const HEARTBEAT: Duration = Duration::from_secs(15);
 
-/// Operations that may legitimately run longer than the server's default unary
-/// deadline (§6.5: the catalogue carries no "long-running" marker, so the client
-/// states an explicit generous deadline for these).
-const LONG_RUNNING: &[&str] = &[
-    "paintbrush.render", "paintbrush.warmup", "paintbrush.install", "paintbrush.render.export", "paintbrush.render.save",
-    "paintbrush.mask.export", "llm.load", "llm.unload", "model.install", "model.rescan", "runtime.llama.install",
-    "gateway.refresh", "llm.endpoint.refresh", "worker.release", "worker.stop", "paintbrush.release",
-    "generation.bulk", "chat.conversation.import", "hf.search", "hf.inspect",
-];
-const LONG_DEADLINE: Duration = Duration::from_secs(3600);
-
 /// What the proxy holds while an SNP profile is active.
 pub struct SnpBackend {
     pub client: SnpClient,
@@ -345,10 +334,8 @@ async fn read_json(body: Body) -> Result<Option<serde_json::Value>, Response> {
 }
 
 async fn unary(backend: &Arc<SnpBackend>, op: &OpDef, args: Value) -> Response {
-    let mut opts = CallOpts::new(if op.method == "GET" { Retry::Safe } else { Retry::Idem });
-    if LONG_RUNNING.contains(&op.op.as_str()) {
-        opts.deadline = Some(LONG_DEADLINE);
-    }
+    // No client deadline: the server applies none to long-running operations (spec 13.5) and 60 s to the rest.
+    let opts = CallOpts::new(if op.method == "GET" { Retry::Safe } else { Retry::Idem });
     match backend.client.call(&op.op, args, opts).await {
         Ok(v) => {
             if op.op == "chat.conversation.export" {
@@ -512,6 +499,9 @@ pub async fn download_to_file(client: &SnpClient, fid: &str, dest: &Path, range:
         match s.recv().await? {
             Event::Data(b) => {
                 got += b.len() as u64;
+                if got > meta.size.max(1) {
+                    return Err(SnpError::Protocol("file.get sent more data than its metadata allows".into()));
+                }
                 f.write_all(&b).await.map_err(|e| SnpError::Io(e.to_string()))?;
             }
             Event::Msg(_) => continue,
@@ -519,7 +509,7 @@ pub async fn download_to_file(client: &SnpClient, fid: &str, dest: &Path, range:
         }
     }
     f.flush().await.map_err(|e| SnpError::Io(e.to_string()))?;
-    let expected = if meta.size == 0 { 0 } else { meta.end + 1 - meta.start };
+    let expected = if meta.size == 0 { 0 } else { meta.end.checked_add(1).and_then(|e| e.checked_sub(meta.start)).ok_or_else(|| SnpError::Protocol("file.get sent inconsistent range metadata".into()))? };
     if got != expected {
         return Err(SnpError::Protocol(format!("file transfer was truncated ({got} of {expected} bytes)")));
     }

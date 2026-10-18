@@ -22,6 +22,11 @@ describe('linkCitations', () => {
     expect(out).toContain('<code>a[1]</code>');
     expect(out).toContain('<a href="x">c[1]</a>');
   });
+  it('does not split inside a quoted attribute that contains a > character', () => {
+    const out = linkCitations('<p><img alt="a>b [1]" src="x"> and [1]</p>', src);
+    expect(out).toContain('alt="a>b [1]"');
+    expect(out.match(/class="cite"/g)).toHaveLength(1);
+  });
   it('is a no-op without sources', () => {
     expect(linkCitations('<p>x [1]</p>', undefined)).toBe('<p>x [1]</p>');
     expect(linkCitations('<p>x [1]</p>', [])).toBe('<p>x [1]</p>');

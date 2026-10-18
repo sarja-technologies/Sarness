@@ -1343,10 +1343,11 @@ mod adapter_tests {
     }
 
     #[tokio::test]
-    async fn long_running_operations_state_an_explicit_deadline() {
+    async fn long_running_operations_carry_no_client_deadline() {
+        // The server exempts them (spec 13.5); a fixed client deadline would kill a slow download.
         let rig = Rig::new().await;
         rig.req("POST", "/v1/models/install").json(&serde_json::json!({})).send().await.unwrap();
-        assert_eq!(rig.server.knobs.opens_of("model.install")[0].deadline_ms, Some(3_600_000));
+        assert_eq!(rig.server.knobs.opens_of("model.install")[0].deadline_ms, None);
         rig.req("GET", "/v1/system").send().await.unwrap();
         assert_eq!(rig.server.knobs.opens_of("system.info")[0].deadline_ms, None);
     }
