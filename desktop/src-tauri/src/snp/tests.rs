@@ -1120,7 +1120,7 @@ mod adapter_tests {
             let dir = tempfile::tempdir().unwrap();
             let shared = ProxyShared::new(dir.path().to_path_buf());
             let port = proxy::serve(shared.clone()).await.unwrap();
-            *shared.snp.write().await = Some(Arc::new(SnpBackend { client: client(&server), profile_id: "p".into() }));
+            *shared.snp.write().await = Some(Arc::new(SnpBackend { client: client(&server) }));
             Rig { server, shared, base: format!("http://127.0.0.1:{port}"), http: reqwest::Client::new(), dir }
         }
         fn url(&self, path: &str) -> String {
@@ -1333,7 +1333,7 @@ mod adapter_tests {
     #[tokio::test]
     async fn chat_generate_streams_the_same_sse_bytes_the_webview_parses() {
         let rig = Rig::new().await;
-        let evs = vec![
+        let evs = [
             m(vec![("type", Value::text("user_message")), ("message", m(vec![("id", Value::text("m1")), ("content", Value::text("hi"))]))]),
             m(vec![("type", Value::text("assistant_start")), ("message", m(vec![("id", Value::text("m2"))]))]),
             m(vec![("type", Value::text("delta")), ("content", Value::text("héllo ✓")), ("reasoning", Value::text(""))]),
@@ -1564,12 +1564,173 @@ mod adapter_tests {
         let mut cf = cfg(&server);
         let wrong = Pin::parse(&format!("sha256:{}", "ee".repeat(32))).unwrap();
         cf.pin = Some(wrong);
-        *shared.snp.write().await = Some(Arc::new(SnpBackend { client: SnpClient::new(cf), profile_id: "p".into() }));
+        *shared.snp.write().await = Some(Arc::new(SnpBackend { client: SnpClient::new(cf) }));
         let r = reqwest::Client::new().get(format!("http://127.0.0.1:{port}/v1/system?s={}", shared.session)).send().await.unwrap();
         assert_eq!(r.status(), 502);
         let v: serde_json::Value = r.json().await.unwrap();
         let d = v["detail"].as_str().unwrap();
         assert!(d.contains(&wrong.to_string()) && d.contains(&server.pin()), "{d}");
         assert_eq!(v["error"], "pin_mismatch");
+    }
+}
+
+// ===========================================================================
+// Interoperability with the real engine (not run by default)
+//
+//   SNP_INTEROP_HOST=127.0.0.1 SNP_INTEROP_PORT=18791 SNP_INTEROP_PIN=sha256:... \
+//   SNP_INTEROP_TOKEN=sk-... cargo test interop -- --ignored --nocapture
+// ===========================================================================
+mod interop {
+    use super::*;
+    use crate::proxy::{self, ProxyShared};
+    use crate::snp::adapter::{self, SnpBackend};
+
+    // A valid 1x1 PNG.
+    const PNG: &[u8] = &[
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+        0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0xf0,
+        0x1f, 0x00, 0x05, 0x00, 0x01, 0xff, 0x89, 0x99, 0x3d, 0x1d, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+
+    fn env() -> Option<(String, u16, String, String)> {
+        Some((
+            std::env::var("SNP_INTEROP_HOST").ok()?,
+            std::env::var("SNP_INTEROP_PORT").ok()?.parse().ok()?,
+            std::env::var("SNP_INTEROP_PIN").ok()?,
+            std::env::var("SNP_INTEROP_TOKEN").ok()?,
+        ))
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a running engine: set SNP_INTEROP_HOST / _PORT / _PIN / _TOKEN"]
+    async fn the_client_interoperates_with_the_real_engine() {
+        let Some((host, port, pin, token)) = env() else { panic!("SNP_INTEROP_* variables are not set") };
+        let cfg = SnpConfig::new(&host, port, Some(Pin::parse(&pin).unwrap()), &token);
+        let c = SnpClient::new(cfg.clone());
+        let info = c.connect().await.expect("handshake");
+        println!("negotiated: version {} server {:?} features {:?} limits {:?} api {} rtt {} ms", info.version, info.server, info.features, info.limits, info.api_version, info.latency_ms);
+        assert_eq!(info.pin, pin);
+
+        // TOFU probe sees the same identity and sends nothing.
+        assert_eq!(super::super::probe(&host, port, None).await.unwrap().pin, pin);
+
+        // Unary reads and writes.
+        let health = c.call("system.health", none(), CallOpts::new(Retry::Safe)).await.unwrap();
+        assert_eq!(health.get("service").and_then(Value::as_str), Some("sarness-engine"));
+        let sys = c.call("system.info", none(), CallOpts::new(Retry::Safe)).await.unwrap();
+        assert!(sys.get("hardware").is_some());
+        let conv = c.call("chat.conversation.create", args(vec![("body", m(vec![("title", Value::text("interop test"))]))]), CallOpts::new(Retry::Idem)).await.unwrap();
+        let cid = conv.get("id").and_then(Value::as_str).expect("conversation id").to_string();
+        let got = c.call("chat.conversation.get", args(vec![("cid", Value::text(cid.clone()))]), CallOpts::new(Retry::Safe)).await.unwrap();
+        assert_eq!(got.get("id").and_then(Value::as_str), Some(cid.as_str()));
+        let list = c.call("chat.conversation.list", none(), CallOpts::new(Retry::Safe)).await.unwrap();
+        assert!(format!("{list:?}").contains(&cid));
+        // Typed query parameters are accepted as the adapter sends them.
+        c.call("job.list", args(vec![("limit", Value::Int(5)), ("status", Value::text("running"))]), CallOpts::new(Retry::Safe)).await.unwrap();
+        c.call("generation.list", args(vec![("limit", Value::Int(3)), ("favorite", Value::Bool(false)), ("since", Value::Float(1.5))]), CallOpts::new(Retry::Safe)).await.unwrap();
+
+        // Errors keep their HTTP-compatible status.
+        match c.call("chat.conversation.get", args(vec![("cid", Value::text("does-not-exist"))]), CallOpts::new(Retry::Safe)).await {
+            Err(SnpError::Remote(r)) => assert_eq!((r.code.as_str(), r.status), ("not_found", 404)),
+            other => panic!("{other:?}"),
+        }
+        match c.call("no.such.op", none(), CallOpts::new(Retry::Safe)).await {
+            Err(SnpError::Remote(r)) => assert_eq!(r.code, "unknown_op"),
+            other => panic!("{other:?}"),
+        }
+
+        // Upload, then download (whole and ranged) through file.get.
+        let mut up = c.open("file.upload", args(vec![("name", Value::text("p.png")), ("mime", Value::text("image/png")), ("size", Value::Int(PNG.len() as i64))])).await.unwrap();
+        up.send_data(Bytes::from_static(PNG)).await.unwrap();
+        up.end().unwrap();
+        let (_, _, rec) = drain_to_end(&mut up).await;
+        println!("upload record: {rec:?}");
+        let fid = rec.get("id").and_then(Value::as_str).expect("upload id").to_string();
+        let dir = tempfile::tempdir().unwrap();
+        let whole = dir.path().join("whole");
+        let meta = adapter::download_to_file(&c, &fid, &whole, None).await.unwrap();
+        assert_eq!(std::fs::read(&whole).unwrap(), PNG);
+        assert_eq!(meta.mime, "image/png");
+        let part = dir.path().join("part");
+        let meta = adapter::download_to_file(&c, &fid, &part, Some((1, Some(8)))).await.unwrap();
+        assert_eq!((meta.start, meta.end), (1, 8));
+        assert_eq!(std::fs::read(&part).unwrap(), &PNG[1..=8]);
+
+        // A multi-megabyte transfer exercises flow control in both directions against the real engine.
+        let big: Vec<u8> = (0..6 * 1024 * 1024u32).map(|i| b'a' + (i % 23) as u8).collect();
+        let t0 = Instant::now();
+        let mut up = c.open("file.upload", args(vec![("name", Value::text("big.txt")), ("mime", Value::text("text/plain"))])).await.unwrap();
+        up.send_data(Bytes::from(big.clone())).await.unwrap();
+        up.end().unwrap();
+        let (_, _, rec) = drain_to_end(&mut up).await;
+        assert_eq!(rec.get("size").and_then(Value::as_u64), Some(big.len() as u64));
+        let t_up = t0.elapsed();
+        let bigid = rec.get("id").and_then(Value::as_str).unwrap().to_string();
+        let dest = dir.path().join("big");
+        let t1 = Instant::now();
+        adapter::download_to_file(&c, &bigid, &dest, None).await.unwrap();
+        assert!(std::fs::read(&dest).unwrap() == big, "downloaded bytes differ");
+        println!("6 MiB upload {:?}, download {:?}", t_up, t1.elapsed());
+
+        // Events: hello, then whatever telemetry arrives.
+        let mut sub = c.subscribe_events(vec![], true).await.unwrap();
+        match tokio::time::timeout(Duration::from_secs(5), sub.next()).await.unwrap() {
+            SubEvent::Event(v) => assert_eq!(v.get("type").and_then(Value::as_str), Some("hello")),
+            other => panic!("{other:?}"),
+        }
+        if let Ok(SubEvent::Event(v)) = tokio::time::timeout(Duration::from_secs(8), sub.next()).await {
+            println!("first event: {:?}", v.get("type"));
+        }
+        drop(sub);
+
+        // Cleanup and a cancelled stream.
+        c.call("chat.conversation.delete", args(vec![("cid", Value::text(cid))]), CallOpts::new(Retry::Idem)).await.unwrap();
+        let st = c.open("event.subscribe", none()).await.unwrap();
+        drop(st);
+        assert!(c.call("system.health", none(), CallOpts::new(Retry::Safe)).await.is_ok());
+        assert_eq!(c.connect_count(), 1);
+
+        // Wrong token and wrong pin are refused with the right errors.
+        let bad = SnpClient::new(SnpConfig::new(&host, port, Some(Pin::parse(&pin).unwrap()), "sk-definitely-wrong"));
+        assert!(matches!(bad.connect().await, Err(SnpError::Unauthenticated(_))));
+        let wrong_pin = SnpClient::new(SnpConfig::new(&host, port, Some(Pin::parse(&format!("sha256:{}", "00".repeat(32))).unwrap()), &token));
+        assert!(matches!(wrong_pin.connect().await, Err(SnpError::PinMismatch { .. })));
+
+        // And the whole thing through the loopback proxy, as the webview would use it.
+        let dir = tempfile::tempdir().unwrap();
+        let shared = ProxyShared::new(dir.path().to_path_buf());
+        let pport = proxy::serve(shared.clone()).await.unwrap();
+        *shared.snp.write().await = Some(Arc::new(SnpBackend { client: SnpClient::new(cfg) }));
+        let http = reqwest::Client::new();
+        let base = format!("http://127.0.0.1:{pport}");
+        let s = &shared.session;
+        let v: serde_json::Value = http.get(format!("{base}/v1/system?s={s}")).send().await.unwrap().json().await.unwrap();
+        assert!(v.get("hardware").is_some(), "{v}");
+        let v: serde_json::Value = http.post(format!("{base}/v1/chat/conversations?s={s}")).json(&serde_json::json!({"title": "via proxy"})).send().await.unwrap().json().await.unwrap();
+        let pcid = v["id"].as_str().unwrap().to_string();
+        let r = http.get(format!("{base}/v1/chat/conversations/{pcid}/export?format=md&s={s}")).send().await.unwrap();
+        println!("export md: {} {:?}", r.status(), r.headers().get("content-type"));
+        assert_eq!(r.status(), 200);
+        let r = http.get(format!("{base}/v1/chat/conversations/nope?s={s}")).send().await.unwrap();
+        assert_eq!(r.status(), 404);
+        println!("detail: {}", r.text().await.unwrap());
+        // Generation without a usable model fails before the stream starts: an ordinary HTTP error.
+        let r = http.post(format!("{base}/v1/chat/conversations/{pcid}/generate?s={s}")).json(&serde_json::json!({"content": "hi"})).send().await.unwrap();
+        let (status, text) = (r.status(), r.text().await.unwrap());
+        println!("generate without a model: {status} {text}");
+        assert!(status.is_client_error() || status.is_server_error(), "{status} {text}");
+        assert!(serde_json::from_str::<serde_json::Value>(&text).unwrap()["detail"].is_string());
+        let r = http.delete(format!("{base}/v1/chat/conversations/{pcid}?s={s}")).send().await.unwrap();
+        assert_eq!(r.status(), 200);
+        let boundary = "xBOUNDARYx";
+        let mut body = format!("--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"p.png\"\r\nContent-Type: image/png\r\n\r\n").into_bytes();
+        body.extend_from_slice(PNG);
+        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+        let r = http.post(format!("{base}/v1/uploads?s={s}")).header("content-type", format!("multipart/form-data; boundary={boundary}")).body(body).send().await.unwrap();
+        assert_eq!(r.status(), 200);
+        let rec: serde_json::Value = r.json().await.unwrap();
+        let r = http.get(format!("{base}/v1/files/{}?s={s}", rec["id"].as_str().unwrap())).send().await.unwrap();
+        assert_eq!(r.status(), 200);
+        assert_eq!(r.bytes().await.unwrap().as_ref(), PNG);
     }
 }

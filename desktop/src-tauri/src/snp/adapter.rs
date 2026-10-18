@@ -22,7 +22,6 @@ use axum::{
 };
 use bytes::Bytes;
 use futures_util::{SinkExt, Stream, StreamExt};
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -46,7 +45,6 @@ const LONG_DEADLINE: Duration = Duration::from_secs(3600);
 /// What the proxy holds while an SNP profile is active.
 pub struct SnpBackend {
     pub client: SnpClient,
-    pub profile_id: String,
 }
 
 // ---------------------------------------------------------------- catalogue
@@ -71,6 +69,7 @@ enum Seg {
 pub struct OpDef {
     pub op: String,
     pub method: String,
+    #[cfg_attr(not(test), allow(dead_code))]
     pub route: String,
     pub mode: OpMode,
     pub params: Vec<String>,
@@ -80,6 +79,7 @@ pub struct OpDef {
 }
 
 impl OpDef {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn path_param_names(&self) -> Vec<&str> {
         self.segs
             .iter()
@@ -161,6 +161,7 @@ impl OpTable {
         Ok(OpTable { ops })
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn by_name(&self, name: &str) -> Option<&OpDef> {
         self.ops.iter().find(|o| o.op == name)
     }
@@ -334,6 +335,7 @@ pub async fn handle(backend: &Arc<SnpBackend>, req: Request) -> Response {
     }
 }
 
+#[allow(clippy::result_large_err)]
 async fn read_json(body: Body) -> Result<Option<serde_json::Value>, Response> {
     let bytes = axum::body::to_bytes(body, MAX_JSON_BODY).await.map_err(|_| json_response(StatusCode::PAYLOAD_TOO_LARGE, &serde_json::json!({ "detail": "request body is too large" })))?;
     if bytes.iter().all(|b| b.is_ascii_whitespace()) {
@@ -583,9 +585,4 @@ async fn bridge(sock: WebSocket, mut sub: super::client::EventSubscription, api_
         }
     }
     let _ = tx.send(WsMsg::Close(None)).await;
-}
-
-/// Name → op lookup used by tests and diagnostics.
-pub fn op_names() -> HashMap<&'static str, OpMode> {
-    table().ops.iter().map(|o| (o.op.as_str(), o.mode)).collect()
 }

@@ -99,6 +99,7 @@ impl SnpError {
     }
 
     /// Security or authentication failure (as opposed to plain unreachability).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn is_security(&self) -> bool {
         matches!(
             self,
@@ -107,22 +108,6 @@ impl SnpError {
                 | SnpError::NoServerIdentity(_)
                 | SnpError::Unauthenticated(_)
                 | SnpError::ServerProof
-        )
-    }
-
-    /// The failure came from the transport, not from the operation itself.
-    pub fn is_transport(&self) -> bool {
-        matches!(
-            self,
-            SnpError::Dns { .. }
-                | SnpError::Refused { .. }
-                | SnpError::Timeout { .. }
-                | SnpError::Io(_)
-                | SnpError::ConnectionLost(_)
-                | SnpError::GoAway { .. }
-                | SnpError::NotProcessed
-                | SnpError::Backoff { .. }
-                | SnpError::RateLimited(_)
         )
     }
 

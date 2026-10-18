@@ -42,6 +42,8 @@ cd engine
 | `desktop: npx vitest run` | Workflow graph conversion (groups, reroutes, defaults), connection validation and cycle checks, copy/paste cloning, chat branch tree, formatting and aspect maths. |
 | `desktop: npx svelte-check` | Type checking of all Svelte/TypeScript code. |
 | `desktop/src-tauri: cargo test` | Profile validation, SSH argument safety, proxy session checks, cache eviction, **proxy integration test** against a mock engine (session enforcement, token injection, SSE streaming, media cache with Range, WebSocket bridge, offline behaviour). |
+| `desktop/src-tauri: cargo test snp::` | The SNP/1 client against an in-process fake server (own framing and credit bookkeeping, rcgen certificate): strict CBOR/framing rejection vectors, the SNP.md section 12.2 vectors, handshake / pin mismatch / server proof / version failures, flow control and backpressure, cancel and deadlines, reconnect back-off, idempotency-key reuse, malformed and oversized frames, interrupted uploads, and the loopback adapter (route table, SSE conversion, uploads, media cache, event WebSocket, no HTTP fallback). |
+| `cargo test interop -- --ignored` | The same client against a real engine. Needs `SNP_INTEROP_HOST`, `SNP_INTEROP_PORT`, `SNP_INTEROP_PIN` (from `sarness-engine snp-identity`) and `SNP_INTEROP_TOKEN`. |
 | `engine/tests/gpu_smoke.py image|video|extra|all` | **Real inference** through the public API against a running engine with models installed (asserts outputs decode and have the expected size). |
 
 ## Adding a node type

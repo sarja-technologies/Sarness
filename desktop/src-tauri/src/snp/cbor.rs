@@ -76,12 +76,6 @@ impl Value {
             _ => None,
         }
     }
-    pub fn as_i64(&self) -> Option<i64> {
-        match self {
-            Value::Int(i) => Some(*i),
-            _ => None,
-        }
-    }
     pub fn as_u64(&self) -> Option<u64> {
         match self {
             Value::Int(i) if *i >= 0 => Some(*i as u64),

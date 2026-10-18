@@ -321,7 +321,7 @@ async fn connect(app: AppHandle, core: State<'_, Core>, id: String) -> CmdResult
         None
     };
     let set_snp_backend = |client: &snp::SnpClient| {
-        Arc::new(SnpBackend { client: client.clone(), profile_id: id.clone() })
+        Arc::new(SnpBackend { client: client.clone() })
     };
 
     match profile.mode {

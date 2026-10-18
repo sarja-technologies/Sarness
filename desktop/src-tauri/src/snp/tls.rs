@@ -1,9 +1,10 @@
 //! TLS 1.3 transport and server identity (SNP.md §3, §5.1).
 //!
-//! There is deliberately no "insecure" mode. A connection is verified either
-//!   * against a pinned SHA-256 of the certificate's SubjectPublicKeyInfo (the
-//!     `CertificateVerify` signature is still checked by the crypto provider), or
-//!   * against the system trust store with hostname verification.
+//! There is deliberately no "insecure" mode. A connection is verified either against
+//! a pinned SHA-256 of the certificate's SubjectPublicKeyInfo (the `CertificateVerify`
+//! signature is still checked by the crypto provider), or against the system trust
+//! store with hostname verification.
+//!
 //! The only other verifier, [`Trust::Probe`], exists for trust-on-first-use: it is
 //! used exclusively by [`probe_pin`], which closes the connection right after the
 //! handshake and never exposes the stream, so no `AUTH` can ever be sent over it.

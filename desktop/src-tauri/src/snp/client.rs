@@ -51,7 +51,8 @@ pub fn client_proof(key: &[u8; 32], nonce: &[u8], cnonce: &[u8], spki: &[u8; 32]
     proof(key, b"SNP/1 client", nonce, cnonce, spki)
 }
 
-/// `HMAC-SHA256(K, "SNP/1 server" ‖ cnonce ‖ nonce ‖ spki)`
+/// `HMAC-SHA256(K, "SNP/1 server" ‖ cnonce ‖ nonce ‖ spki)` (the handshake verifies it with `Mac::verify_slice`).
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn server_proof(key: &[u8; 32], cnonce: &[u8], nonce: &[u8], spki: &[u8; 32]) -> [u8; 32] {
     proof(key, b"SNP/1 server", cnonce, nonce, spki)
 }
@@ -627,12 +628,9 @@ pub struct SnpStream {
 }
 
 impl SnpStream {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn id(&self) -> u32 {
         self.shared.id
-    }
-
-    pub fn session(&self) -> &SessionInfo {
-        &self.conn.info
     }
 
     fn flush_credit(&mut self) {
@@ -705,7 +703,7 @@ impl SnpStream {
         Ok(())
     }
 
-    /// Sends a MSG (flow-controlled).
+    /// Sends a MSG (flow-controlled): the control channel of `subscribe` streams.
     pub async fn send_msg(&self, v: &Value) -> Result<(), SnpError> {
         let payload = cbor::encode(v).map_err(|e| SnpError::Protocol(format!("cannot encode message: {e}")))?;
         let limit = self.conn.chunk_limit();
@@ -908,6 +906,7 @@ pub enum Retry {
     /// Mutating: re-send only with an idempotency key.
     Idem,
     /// Never re-send automatically.
+    #[cfg_attr(not(test), allow(dead_code))]
     No,
 }
 
@@ -981,6 +980,7 @@ impl SnpClient {
     }
 
     /// Number of connections established so far (diagnostics, tests).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn connect_count(&self) -> u64 {
         self.inner.connects.load(Ordering::Relaxed)
     }
@@ -1018,7 +1018,8 @@ impl SnpClient {
 
     /// Negotiated session of the live connection, if any.
     pub async fn info(&self) -> Option<Arc<SessionInfo>> {
-        let st = self.inner.state.lock().await;
+        // Never waits for a connection attempt that is in flight.
+        let st = self.inner.state.try_lock().ok()?;
         st.conn.as_ref().filter(|c| c.usable()).map(|c| c.info.clone())
     }
 
@@ -1247,6 +1248,7 @@ impl EventSubscription {
     }
 
     /// Adds / removes topics on the live subscription (and remembers them for re-subscription).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub async fn update_topics(&mut self, subscribe: Vec<String>, unsubscribe: Vec<String>) -> Result<(), SnpError> {
         for t in &subscribe {
             if !self.topics.contains(t) {
@@ -1259,7 +1261,4 @@ impl EventSubscription {
         s.send_msg(&Value::map([("subscribe", arr(&subscribe)), ("unsubscribe", arr(&unsubscribe))])).await
     }
 
-    pub fn is_established(&self) -> bool {
-        self.stream.is_some() && self.had_stream
-    }
 }

@@ -142,7 +142,6 @@ pub struct Knobs {
 #[derive(Clone, Debug)]
 pub enum Reply {
     Msg(Value),
-    Data(Vec<u8>),
     End(Value),
     Error { code: String, status: u16, message: String, retryable: bool, detail: Option<Value> },
     /// Wait for the client's CANCEL, then reply `cancelled`.
@@ -725,9 +724,10 @@ async fn handle(ctx: Ctx, mut inb: mpsc::UnboundedReceiver<Inb>) {
             ctx.msg(&m(vec![("type", Value::text("hello")), ("data", m(vec![("api_version", Value::text("1.9"))]))])).await;
             loop {
                 tokio::select! {
-                    ev = events.recv() => match ev {
-                        Ok(v) => ctx.msg(&v).await,
-                        Err(_) => {}
+                    ev = events.recv() => {
+                        if let Ok(v) = ev {
+                            ctx.msg(&v).await;
+                        }
                     },
                     i = inb.recv() => match i {
                         Some(i) if i.kind == 0x11 => {
@@ -775,7 +775,6 @@ async fn run_script(ctx: &Ctx, replies: Vec<Reply>, inb: &mut mpsc::UnboundedRec
     for r in replies {
         match r {
             Reply::Msg(v) => ctx.msg(&v).await,
-            Reply::Data(d) => ctx.send_flow(0x12, &d).await,
             Reply::End(v) => ctx.end(v),
             Reply::Error { code, status, message, retryable, detail } => ctx.error(&code, status, &message, retryable, detail),
             Reply::WaitCancel => {
