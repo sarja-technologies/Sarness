@@ -1,10 +1,11 @@
 <script lang="ts">
-  import { Cpu, ListTodo, MessageSquareText, RefreshCw, Server } from '@lucide/svelte';
+  import { Cpu, ListTodo, MessageSquareText, Network, RefreshCw, Server, ShieldCheck } from '@lucide/svelte';
   import { activeProfile, conn, reconnectNow } from '../stores/connection.svelte';
   import { activeJobs } from '../stores/jobs.svelte';
   import { models } from '../stores/models.svelte';
   import { prefs, persistPrefs } from '../stores/prefs.svelte';
   import { mib } from '../util/format';
+  import { describeLimits, describeSession, shortPin, transportLabel } from '../stores/transport';
   import { tooltip } from '../ui/tooltip';
 
   const gpu = $derived(conn.stats?.gpus?.[0] ?? conn.system?.hardware.gpus?.[0] ?? null);
@@ -13,6 +14,16 @@
   const running = $derived(activeJobs().filter((j) => j.status === 'running').length);
   const queued = $derived(activeJobs().filter((j) => j.status === 'queued').length);
   const llm = $derived(models.llm);
+  const via = $derived(activeProfile()?.mode === 'ssh' ? ' through an SSH tunnel' : '');
+  const transportTip = $derived.by(() => {
+    if (!conn.transport) return '';
+    const s = conn.snp?.session;
+    if (conn.transport === 'snp') {
+      if (!s) return `SNP${via} - ${conn.snp?.status.error ?? 'negotiating'}`;
+      return `${describeSession(s)} - ${describeLimits(s.limits)} - identity ${shortPin(s.pin)}${via}`;
+    }
+    return `${transportLabel(conn.transport)} connection to the API${via}`;
+  });
   const stateLabel = $derived(
     { online: 'Connected', offline: 'Offline — reconnecting', connecting: 'Connecting…', booting: '', unconfigured: 'No server' }[conn.state],
   );
@@ -26,6 +37,13 @@
     <span class="faint">· {stateLabel}</span>
     {#if conn.state === 'offline'}<RefreshCw class="spin" />{/if}
   </button>
+
+  {#if conn.transport && conn.state !== 'unconfigured' && conn.state !== 'booting'}
+    <span class="seg tp {conn.transport}" use:tooltip={transportTip}>
+      {#if conn.transport === 'http'}<Network />{:else}<ShieldCheck />{/if}
+      <span>{transportLabel(conn.transport)}</span>{#if activeProfile()?.mode === 'ssh'}<span class="faint">via SSH</span>{/if}
+    </span>
+  {/if}
 
   {#if gpu && conn.state === 'online'}
     <div class="seg" use:tooltip={`VRAM ${mib(gpu.vram_used_mb)} of ${mib(gpu.vram_total_mb)} · GPU ${gpu.utilization_pct}%${gpu.temperature_c ? ` · ${gpu.temperature_c}°C` : ''}`}>
@@ -93,6 +111,7 @@
   .online .led { background: var(--ok); box-shadow: 0 0 8px rgba(95, 211, 155, 0.7); }
   .offline .led { background: var(--warn); box-shadow: 0 0 8px rgba(242, 182, 90, 0.6); }
   .connecting .led { background: var(--lavender); animation: pulse-ring 1.4s infinite; }
+  .tp.snp :global(svg), .tp.https :global(svg) { color: var(--ok); }
   .bar { width: 64px; height: 4px; border-radius: 3px; background: rgba(var(--fg-rgb), 0.08); overflow: hidden; }
   .bar span { display: block; height: 100%; background: var(--accent-hi); transform-origin: left; transition: transform 600ms var(--ease-out); }
   .bar span.hot { background: var(--warn); }

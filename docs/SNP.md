@@ -221,7 +221,7 @@ If `deadline_ms` is present the server MUST terminate the operation with `deadli
 
 ## 7. Operations
 
-The operation catalogue is `engine/sarness_engine/snp/ops.json`, schema version `SNP/1`. It is normative for operation names, modes and argument names; the table in §12 is generated from it. Arguments are given in `args` by parameter name: path and query parameters of the equivalent HTTP route as top-level keys, the JSON request body as the map under key `body`. Result values and error conditions are those of the corresponding engine handler. A server MUST reject unknown `op` with `unknown_op`, missing required parameters with `bad_request`, and MUST NOT interpret `args` keys it does not know.
+The operation catalogue is `engine/sarness_engine/snp/ops.json`, schema version `SNP/1`. It is normative for operation names, modes and argument names; the table in §12 is generated from it. Arguments are given in `args` by parameter name: path and query parameters of the equivalent HTTP route as top-level keys, the JSON request body as the map under key `body` (the only exception is `settings.patch`, whose body map is carried under `patch`, as listed in the catalogue). Result values and error conditions are those of the corresponding engine handler. A server MUST reject unknown `op` with `unknown_op`, missing required parameters with `bad_request`, and MUST NOT interpret `args` keys it does not know.
 
 ### 7.1 Streaming operations
 

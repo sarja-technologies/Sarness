@@ -16,6 +16,7 @@ use axum::{
     routing::any,
     Router,
 };
+use crate::snp::adapter::{self, SnpBackend};
 use futures_util::{SinkExt, StreamExt, TryStreamExt};
 use std::{
     path::{Path, PathBuf},
@@ -36,6 +37,9 @@ pub struct Upstream {
 
 pub struct ProxyShared {
     pub upstream: RwLock<Option<Upstream>>,
+    /// Set instead of `upstream` while an SNP profile is active: the proxy then never
+    /// speaks HTTP to the engine (see `snp::adapter`).
+    pub snp: RwLock<Option<Arc<SnpBackend>>>,
     pub session: String,
     pub client: reqwest::Client,
     pub cache_dir: PathBuf,
@@ -51,7 +55,7 @@ impl ProxyShared {
             .build()
             .expect("http client");
         let _ = std::fs::create_dir_all(cache_dir.join("media"));
-        Arc::new(Self { upstream: RwLock::new(None), session, client, cache_dir })
+        Arc::new(Self { upstream: RwLock::new(None), snp: RwLock::new(None), session, client, cache_dir })
     }
 }
 
@@ -61,6 +65,8 @@ pub async fn serve(shared: Arc<ProxyShared>) -> std::io::Result<u16> {
     let app = Router::new()
         .route("/v1/events", any(ws_handler))
         .fallback(any(proxy_handler))
+        // Uploads are streamed to the engine; the extractor default (2 MB) would break them over SNP.
+        .layer(axum::extract::DefaultBodyLimit::disable())
         .with_state(shared.clone());
     tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, app).await {
@@ -72,7 +78,7 @@ pub async fn serve(shared: Arc<ProxyShared>) -> std::io::Result<u16> {
     Ok(port)
 }
 
-fn cors(h: &mut HeaderMap) {
+pub(crate) fn cors(h: &mut HeaderMap) {
     h.insert("access-control-allow-origin", HeaderValue::from_static("*"));
     h.insert("access-control-expose-headers", HeaderValue::from_static("*"));
 }
@@ -155,6 +161,9 @@ async fn proxy_handler(State(shared): State<Arc<ProxyShared>>, req: Request) -> 
         }
     }
 
+    if let Some(backend) = shared.snp.read().await.clone() {
+        return adapter::handle(&backend, Request::from_parts(parts, body)).await;
+    }
     let Some(up) = upstream else {
         return json_error(StatusCode::SERVICE_UNAVAILABLE, "not connected to a Sarness Engine");
     };
@@ -235,6 +244,9 @@ pub async fn ensure_cached(shared: &ProxyShared, upstream: Option<&Upstream>, id
         let _ = filetime_touch(&p);
         return Ok(p);
     }
+    if let Some(backend) = shared.snp.read().await.clone() {
+        return fetch_via_snp(shared, &backend, id).await;
+    }
     let up = upstream.ok_or((StatusCode::SERVICE_UNAVAILABLE, "offline and not cached".to_string()))?;
     let resp = shared
         .client
@@ -269,6 +281,23 @@ pub async fn ensure_cached(shared: &ProxyShared, upstream: Option<&Upstream>, id
     }
     file.flush().await.ok();
     drop(file);
+    tokio::fs::rename(&tmp, &final_path).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(final_path)
+}
+
+/// SNP transport: `file.get` into the same content-addressed cache the HTTP path fills.
+async fn fetch_via_snp(shared: &ProxyShared, backend: &SnpBackend, id: &str) -> Result<PathBuf, (StatusCode, String)> {
+    let dir = shared.cache_dir.join("media");
+    let tmp = dir.join(format!("{id}.{}.part", uuid::Uuid::new_v4().simple()));
+    let meta = match adapter::download_to_file(&backend.client, id, &tmp, None).await {
+        Ok(m) => m,
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            let code = StatusCode::from_u16(e.http_status()).unwrap_or(StatusCode::BAD_GATEWAY);
+            return Err((code, e.to_string()));
+        }
+    };
+    let final_path = dir.join(format!("{id}.{}", ext_for(&meta.mime)));
     tokio::fs::rename(&tmp, &final_path).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(final_path)
 }
@@ -353,6 +382,9 @@ async fn ws_handler(State(shared): State<Arc<ProxyShared>>, ws: WebSocketUpgrade
     log::debug!("WS {}", parts.uri.path());
     if !session_ok(&shared, &parts.headers, parts.uri.query()) {
         return json_error(StatusCode::FORBIDDEN, "invalid desktop session");
+    }
+    if let Some(backend) = shared.snp.read().await.clone() {
+        return adapter::ws(backend, ws).await;
     }
     let Some(up) = shared.upstream.read().await.clone() else {
         return json_error(StatusCode::SERVICE_UNAVAILABLE, "not connected to a Sarness Engine");

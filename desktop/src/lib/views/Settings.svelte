@@ -23,6 +23,7 @@
   import Toggle from '../ui/Toggle.svelte';
   import { confirmDialog } from '../ui/dialogs.svelte';
   import { bytes } from '../util/format';
+  import { endpointLabel, profileTransport, transportLabel } from '../stores/transport';
 
   type Section = 'appearance' | 'servers' | 'engine' | 'endpoints' | 'desktop' | 'about';
   let section = $state<Section>('appearance');
@@ -140,15 +141,15 @@
       </div>
     {:else if section === 'servers'}
       <div class="head"><h2>Servers</h2><Button variant="primary" size="sm" onclick={() => (editing = 'new')}><Plus />Add server</Button></div>
-      <p class="muted lead">Sarness connects to a Sarness Engine over your LAN, Tailscale or an SSH tunnel. Tokens live in your system keyring.</p>
+      <p class="muted lead">Sarness connects directly to a Sarness Engine, optionally through an SSH tunnel. Tokens live in your system keyring.</p>
       <div class="list">
         {#each conn.profiles as p (p.id)}
           {@const isActive = conn.activeId === p.id}
           <div class="card prof" class:active={isActive}>
             <span class="led" class:on={isActive && conn.state === 'online'} class:off={isActive && conn.state === 'offline'}></span>
             <div class="info">
-              <div class="name">{p.name} {#if isActive}<Badge tone={conn.state === 'online' ? 'ok' : 'warn'}>{conn.state}</Badge>{/if}</div>
-              <div class="sub mono">{p.mode === 'ssh' ? `ssh ${p.ssh?.user}@${p.ssh?.host} → ${p.host}:${p.port}` : `${p.scheme}://${p.host}:${p.port}`}</div>
+              <div class="name">{p.name} <Badge tone={profileTransport(p) === 'snp' ? 'accent' : 'neutral'}>{transportLabel(profileTransport(p))}</Badge> {#if isActive}<Badge tone={conn.state === 'online' ? 'ok' : 'warn'}>{conn.state}</Badge>{/if}</div>
+              <div class="sub mono">{endpointLabel(p)}</div>
             </div>
             {#if !p.has_token}<Badge tone="warn"><KeyRound />No token</Badge>{/if}
             {#if isActive && conn.state !== 'offline'}

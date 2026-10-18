@@ -16,7 +16,7 @@
       <li><Clapperboard /> Text-to-video on consumer GPUs</li>
       <li><Workflow /> Executable node workflows behind every generation</li>
     </ul>
-    <p class="faint small">Sarness talks to a <b>Sarness Engine</b> running on your AI server (or this computer). Traffic stays on your LAN or tailnet — nothing is exposed to the internet.</p>
+    <p class="faint small">Sarness talks to a <b>Sarness Engine</b> running on your AI server (or this computer). Traffic goes directly between this app and your server — nothing is routed through Sarness or any cloud service.</p>
   </div>
   <div class="card">
     <h2>Connect to your server</h2>

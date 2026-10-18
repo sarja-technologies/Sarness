@@ -5,10 +5,12 @@ mod agent;
 mod config;
 mod discovery;
 mod proxy;
+mod snp;
 mod ssh;
 
-use config::{ConnectionMode, Profile, ProfileStore};
+use config::{ConnectionMode, Profile, ProfileStore, Transport};
 use proxy::{ProxyShared, Upstream};
+use snp::adapter::SnpBackend;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -35,6 +37,30 @@ struct ProxyInfo {
     session: String,
     connected: bool,
     profile_id: Option<String>,
+    /// Transport of the active profile: "snp" | "http" | "https".
+    transport: Option<String>,
+    /// Live SNP state (negotiated session, connection status) while an SNP profile is active.
+    snp: Option<SnpLive>,
+}
+
+#[derive(Serialize)]
+struct SnpLive {
+    status: snp::client::ClientStatus,
+    session: Option<snp::SessionInfo>,
+}
+
+/// Negotiated SNP parameters reported by "Test connection". Contains no secrets.
+#[derive(Serialize)]
+struct SnpTestInfo {
+    version: u8,
+    server: String,
+    features: Vec<String>,
+    limits: snp::client::Limits,
+    api_version: String,
+    pin: String,
+    fingerprint: String,
+    /// HELLO → HELLO_OK round trip.
+    handshake_ms: u64,
 }
 
 #[derive(Serialize, Default)]
@@ -45,6 +71,14 @@ struct TestResult {
     latency_ms: Option<u128>,
     health: Option<serde_json::Value>,
     system: Option<serde_json::Value>,
+    /// "snp" | "http" | "https"
+    transport: String,
+    snp: Option<SnpTestInfo>,
+    /// Machine-readable failure category (dns, refused, timeout, tls, pin_mismatch, …).
+    error_kind: Option<String>,
+    /// Pin stored in the profile / pin the server presented (pin mismatch or untrusted certificate).
+    expected_pin: Option<String>,
+    presented_pin: Option<String>,
 }
 
 type CmdResult<T> = Result<T, String>;
@@ -64,6 +98,7 @@ fn save_profile(mut profile: Profile, token: Option<String>) -> CmdResult<Profil
     if profile.id.is_empty() {
         profile.id = uuid::Uuid::new_v4().simple().to_string();
     }
+    profile.normalize();
     profile.validate()?;
     if let Some(t) = token.filter(|t| !t.trim().is_empty()) {
         config::set_token(&profile.id, t.trim())?;
@@ -104,7 +139,7 @@ async fn check_engine(base: &str, token: &str) -> TestResult {
         },
         Err(e) => {
             let msg = if e.is_timeout() || e.is_connect() {
-                format!("Could not reach {base}. Check the address and port, that the engine is running, and that you are on the same network or tailnet.")
+                format!("Could not reach {base}. Check the address and port, that the engine is running, and that this computer can reach the server.")
             } else {
                 format!("Connection failed: {e}")
             };
@@ -120,31 +155,120 @@ async fn check_engine(base: &str, token: &str) -> TestResult {
         Ok(r) if r.status().as_u16() == 401 => TestResult { stage: "auth".into(), message: "The API token was rejected. Copy the token printed by 'sarness-engine init' (or issue a new one with 'sarness-engine token --rotate').".into(), health: Some(health), latency_ms: Some(latency), ..Default::default() },
         Ok(r) if r.status().is_success() => {
             let system = r.json().await.ok();
-            TestResult { ok: true, stage: "ok".into(), message: "Connected".into(), latency_ms: Some(latency), health: Some(health), system }
+            TestResult { ok: true, stage: "ok".into(), message: "Connected".into(), latency_ms: Some(latency), health: Some(health), system, ..Default::default() }
         }
         Ok(r) => TestResult { stage: "system".into(), message: format!("Engine returned HTTP {}", r.status()), health: Some(health), ..Default::default() },
         Err(e) => TestResult { stage: "system".into(), message: format!("Engine request failed: {e}"), health: Some(health), ..Default::default() },
     }
 }
 
+fn parse_pin(profile: &Profile) -> Result<Option<snp::Pin>, String> {
+    profile.snp_pin.as_deref().map(snp::Pin::parse).transpose()
+}
+
+fn snp_config(profile: &Profile, host: &str, port: u16, token: &str) -> Result<snp::SnpConfig, String> {
+    let mut cfg = snp::SnpConfig::new(host, port, parse_pin(profile)?, token);
+    cfg.endpoint.server_name = profile.snp_server_name.clone();
+    Ok(cfg)
+}
+
+async fn check_snp(cfg: snp::SnpConfig) -> TestResult {
+    let expected = cfg.pin.map(|p| p.to_string());
+    match snp::check(cfg).await {
+        Ok(o) => {
+            let pin = snp::Pin::parse(&o.info.pin).ok();
+            TestResult {
+                ok: true,
+                stage: "ok".into(),
+                message: "Connected over SNP".into(),
+                latency_ms: Some(o.rtt_ms),
+                health: o.health,
+                system: o.system,
+                transport: "snp".into(),
+                snp: Some(SnpTestInfo {
+                    version: o.info.version,
+                    server: o.info.server.clone(),
+                    features: o.info.features.clone(),
+                    limits: o.info.limits.clone(),
+                    api_version: o.info.api_version.clone(),
+                    fingerprint: pin.map(|p| p.fingerprint()).unwrap_or_default(),
+                    pin: o.info.pin.clone(),
+                    handshake_ms: o.info.latency_ms,
+                }),
+                ..Default::default()
+            }
+        }
+        Err(e) => {
+            let (exp, pres) = match &e {
+                snp::SnpError::PinMismatch { expected, presented } => (Some(expected.to_string()), presented.map(|p| p.to_string())),
+                snp::SnpError::UntrustedCertificate { presented, .. } => (expected, presented.map(|p| p.to_string())),
+                _ => (None, None),
+            };
+            TestResult {
+                stage: e.stage().into(),
+                message: e.to_string(),
+                transport: "snp".into(),
+                error_kind: Some(e.kind().into()),
+                expected_pin: exp,
+                presented_pin: pres,
+                ..Default::default()
+            }
+        }
+    }
+}
+
 #[tauri::command]
-async fn test_connection(profile: Profile, token: Option<String>) -> CmdResult<TestResult> {
+async fn test_connection(mut profile: Profile, token: Option<String>) -> CmdResult<TestResult> {
+    profile.normalize();
     profile.validate()?;
+    let transport = profile.transport.as_str().to_string();
     let token = token.filter(|t| !t.trim().is_empty()).map(|t| t.trim().to_string()).or_else(|| config::get_token(&profile.id));
     let Some(token) = token else {
-        return Ok(TestResult { stage: "auth".into(), message: "Enter the engine API token.".into(), ..Default::default() });
+        return Ok(TestResult { stage: "auth".into(), message: "Enter the engine API token.".into(), transport, ..Default::default() });
     };
-    match profile.mode {
-        ConnectionMode::Direct => Ok(check_engine(&profile.direct_url(), &token).await),
-        ConnectionMode::Ssh => {
-            let ssh = profile.ssh.clone().unwrap();
-            let mut tunnel = match ssh::open_tunnel(&ssh, &profile.host, profile.port).await {
+    let mut res = match (profile.transport, &profile.mode) {
+        (Transport::Snp, ConnectionMode::Direct) => check_snp(snp_config(&profile, &profile.host, profile.snp_port, &token)?).await,
+        (Transport::Snp, ConnectionMode::Ssh) => {
+            let mut tunnel = match ssh::open_profile_tunnel(&profile).await {
                 Ok(t) => t,
-                Err(e) => return Ok(TestResult { stage: "ssh".into(), message: e, ..Default::default() }),
+                Err(e) => return Ok(TestResult { stage: "ssh".into(), message: e, transport, error_kind: Some("ssh".into()), ..Default::default() }),
+            };
+            let res = check_snp(snp_config(&profile, "127.0.0.1", tunnel.local_port, &token)?).await;
+            let _ = tunnel.child.kill().await;
+            res
+        }
+        (_, ConnectionMode::Direct) => check_engine(&profile.direct_url(), &token).await,
+        (_, ConnectionMode::Ssh) => {
+            let mut tunnel = match ssh::open_profile_tunnel(&profile).await {
+                Ok(t) => t,
+                Err(e) => return Ok(TestResult { stage: "ssh".into(), message: e, transport, ..Default::default() }),
             };
             let res = check_engine(&format!("http://127.0.0.1:{}", tunnel.local_port), &token).await;
             let _ = tunnel.child.kill().await;
-            Ok(res)
+            res
+        }
+    };
+    res.transport = transport;
+    Ok(res)
+}
+
+/// Trust-on-first-use for SNP: connects once, only to read the identity the server
+/// presents (no AUTH is sent). The UI shows the fingerprint and stores it in the
+/// profile only after the user confirms.
+#[tauri::command]
+async fn snp_probe_pin(mut profile: Profile) -> CmdResult<snp::ProbeResult> {
+    profile.normalize();
+    profile.snp_pin = None;
+    profile.transport = Transport::Snp;
+    profile.validate()?;
+    let name = profile.snp_server_name.clone();
+    match profile.mode {
+        ConnectionMode::Direct => snp::probe(&profile.host, profile.snp_port, name.as_deref()).await.map_err(|e| e.to_string()),
+        ConnectionMode::Ssh => {
+            let mut tunnel = ssh::open_profile_tunnel(&profile).await?;
+            let res = snp::probe("127.0.0.1", tunnel.local_port, name.as_deref()).await.map_err(|e| e.to_string());
+            let _ = tunnel.child.kill().await;
+            res
         }
     }
 }
@@ -154,7 +278,28 @@ async fn disconnect_inner(core: &Core) {
         t.task.abort();
     }
     *core.proxy.upstream.write().await = None;
+    if let Some(b) = core.proxy.snp.write().await.take() {
+        b.client.close().await;
+    }
     *core.active.lock().await = None;
+}
+
+/// What a restarted SSH tunnel must update.
+#[derive(Clone)]
+enum TunnelTarget {
+    Http { proxy: Arc<ProxyShared>, token: String },
+    Snp { client: snp::SnpClient },
+}
+
+impl TunnelTarget {
+    async fn point_at(&self, local_port: u16) {
+        match self {
+            TunnelTarget::Http { proxy, token } => {
+                *proxy.upstream.write().await = Some(Upstream { base: format!("http://127.0.0.1:{local_port}"), token: token.clone() });
+            }
+            TunnelTarget::Snp { client } => client.set_endpoint("127.0.0.1", local_port),
+        }
+    }
 }
 
 #[tauri::command]
@@ -163,19 +308,42 @@ async fn connect(app: AppHandle, core: State<'_, Core>, id: String) -> CmdResult
     let profile = store.get(&id).cloned().ok_or("profile not found")?;
     let token = config::get_token(&id).ok_or("no API token stored for this server")?;
     disconnect_inner(&core).await;
+
+    // Exactly one of `proxy.upstream` (HTTP transports) / `proxy.snp` is set, so an SNP
+    // profile can never be served by an HTTP fallback.
+    let snp_client = if profile.transport == Transport::Snp {
+        let (host, port) = match profile.mode {
+            ConnectionMode::Direct => (profile.host.clone(), profile.snp_port),
+            ConnectionMode::Ssh => ("127.0.0.1".to_string(), 0), // replaced once the tunnel is up
+        };
+        Some(snp::SnpClient::new(snp_config(&profile, &host, port, &token)?))
+    } else {
+        None
+    };
+    let set_snp_backend = |client: &snp::SnpClient| {
+        Arc::new(SnpBackend { client: client.clone() })
+    };
+
     match profile.mode {
         ConnectionMode::Direct => {
-            *core.proxy.upstream.write().await = Some(Upstream { base: profile.direct_url(), token });
+            if let Some(client) = &snp_client {
+                *core.proxy.snp.write().await = Some(set_snp_backend(client));
+            } else {
+                *core.proxy.upstream.write().await = Some(Upstream { base: profile.direct_url(), token });
+            }
         }
         ConnectionMode::Ssh => {
-            let ssh_opts = profile.ssh.clone().unwrap();
-            let first = ssh::open_tunnel(&ssh_opts, &profile.host, profile.port).await?;
-            *core.proxy.upstream.write().await =
-                Some(Upstream { base: format!("http://127.0.0.1:{}", first.local_port), token: token.clone() });
-            let proxy = core.proxy.clone();
+            let first = ssh::open_profile_tunnel(&profile).await?;
+            let target = match &snp_client {
+                Some(client) => TunnelTarget::Snp { client: client.clone() },
+                None => TunnelTarget::Http { proxy: core.proxy.clone(), token: token.clone() },
+            };
+            target.point_at(first.local_port).await;
+            if let Some(client) = &snp_client {
+                *core.proxy.snp.write().await = Some(set_snp_backend(client));
+            }
             let app2 = app.clone();
-            let host = profile.host.clone();
-            let port = profile.port;
+            let profile2 = profile.clone();
             // Supervise the tunnel: restart with backoff whenever ssh exits.
             let task = tokio::spawn(async move {
                 let mut tunnel = first;
@@ -185,10 +353,9 @@ async fn connect(app: AppHandle, core: State<'_, Core>, id: String) -> CmdResult
                     let _ = app2.emit("tunnel-status", serde_json::json!({"state": "reconnecting"}));
                     loop {
                         tokio::time::sleep(Duration::from_secs(backoff)).await;
-                        match ssh::open_tunnel(&ssh_opts, &host, port).await {
+                        match ssh::open_profile_tunnel(&profile2).await {
                             Ok(t) => {
-                                *proxy.upstream.write().await =
-                                    Some(Upstream { base: format!("http://127.0.0.1:{}", t.local_port), token: token.clone() });
+                                target.point_at(t.local_port).await;
                                 let _ = app2.emit("tunnel-status", serde_json::json!({"state": "up"}));
                                 tunnel = t;
                                 backoff = 1;
@@ -209,6 +376,16 @@ async fn connect(app: AppHandle, core: State<'_, Core>, id: String) -> CmdResult
     let mut st = ProfileStore::load();
     st.active = Some(id.clone());
     let _ = st.save();
+
+    // Connect eagerly so identity / authentication failures are reported right away.
+    // Plain unreachability is left to the background reconnect (like the HTTP transports).
+    if let Some(client) = &snp_client {
+        if let Ok(Err(e)) = tokio::time::timeout(Duration::from_secs(12), client.connect()).await {
+            if e.is_fatal() {
+                return Err(e.to_string());
+            }
+        }
+    }
     Ok(proxy_info_inner(&core).await)
 }
 
@@ -219,11 +396,24 @@ async fn disconnect(core: State<'_, Core>) -> CmdResult<()> {
 }
 
 async fn proxy_info_inner(core: &Core) -> ProxyInfo {
+    let snp_backend = core.proxy.snp.read().await.clone();
+    let profile_id = core.active.lock().await.clone();
+    let transport = match (&snp_backend, &profile_id) {
+        (Some(_), _) => Some("snp".to_string()),
+        (None, Some(id)) => ProfileStore::load().get(id).map(|p| p.transport.as_str().to_string()),
+        _ => None,
+    };
+    let snp = match &snp_backend {
+        Some(b) => Some(SnpLive { status: b.client.status(), session: b.client.info().await.map(|i| (*i).clone()) }),
+        None => None,
+    };
     ProxyInfo {
         url: format!("http://127.0.0.1:{}", core.proxy_port),
         session: core.proxy.session.clone(),
-        connected: core.proxy.upstream.read().await.is_some(),
-        profile_id: core.active.lock().await.clone(),
+        connected: core.proxy.upstream.read().await.is_some() || snp_backend.is_some(),
+        profile_id,
+        transport,
+        snp,
     }
 }
 
@@ -440,7 +630,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_profiles, save_profile, delete_profile, test_connection, connect, disconnect, proxy_info,
             discover_servers, install_engine, export_file, save_to_library_folder, write_text_file,
-            read_text_file, cache_info, clear_cache, app_info, frontend_log,
+            read_text_file, snp_probe_pin, cache_info, clear_cache, app_info, frontend_log,
             agent::commands::agent_tool_defs, agent::commands::agent_call, agent::commands::agent_cancel,
             agent::commands::agent_end_run, agent::commands::agent_reset_run, agent::commands::projects_list,
             agent::commands::projects_add, agent::commands::projects_remove, agent::commands::project_create,

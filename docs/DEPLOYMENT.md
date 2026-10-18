@@ -19,7 +19,7 @@ Nothing needs to be exposed to the internet and no router ports are opened.
   (SDXL ≈ 7 GB, Wan 2.1 1.3B ≈ 29 GB, Wan 2.2 5B ≈ 34 GB, chat models 2–8 GB).
 * For Wan video on a 12 GB GPU: **≥ 24 GB system RAM** (the 11 GB UMT5 text
   encoder is kept in RAM and streamed to the GPU).
-* Optional: Tailscale (recommended for access from laptops / other networks).
+* A way for the desktop to reach the server: the same network, a VPN, or key-based SSH.
 
 ## 2a. Guided install from the desktop (SSH)
 
@@ -28,14 +28,15 @@ password prompt, e.g. via `ssh-copy-id` and ssh-agent). Sarness never asks for o
 stores SSH passwords.
 
 1. Open Sarness → **Settings → Servers → Add server** (or the first-run screen).
-2. Choose **SSH tunnel**, fill in SSH user/host (Tailscale name or IP works),
-   then **Install engine via SSH…**.
+2. Turn on **Connect through SSH tunnel**, fill in SSH user/host (a host name or IP
+   address), then **Install engine via SSH…**.
 3. Choose where the engine listens:
-   * **Tailscale (recommended)** — binds to the server's Tailscale IP only.
+   * **Private network (recommended)** — binds to the server's private-network
+     interface only (when none is available it falls back to localhost).
    * **Localhost + SSH tunnel** — binds to 127.0.0.1; the desktop connects through
      an automatically maintained `ssh -L` tunnel.
-   * **LAN address** — binds to the server's primary LAN IP (plain HTTP with a
-     bearer token; only use on a trusted network).
+   * **Local network address** — binds to the server's primary LAN IP (plain HTTP
+     with a bearer token; only use on a trusted network).
 4. The installer copies the engine bundled in the app, installs it in user space,
    creates a systemd *user* service, starts it, waits for `/v1/health`, issues an
    API token and stores it straight into your desktop keyring.
@@ -51,11 +52,12 @@ Copy `dist/sarness-engine.tar.gz` (built by `scripts/package-engine.sh`, or the
 `engine/` folder) and `scripts/install-engine.sh` to the server, then:
 
 ```bash
-bash install-engine.sh --source sarness-engine.tar.gz --bind tailscale --with-llama
+bash install-engine.sh --source sarness-engine.tar.gz --with-llama
 ```
 
 The last line printed is a JSON object containing the **API token** (shown once).
-Options: `--bind tailscale|loopback|lan`, `--port 8742`, `--with-llama`,
+Options: `--bind tailscale|loopback|lan` (`tailscale`, the default, means the
+server's private-network interface), `--port 8742`, `--with-llama`,
 `--keep-token` (don't rotate on reinstall), `--no-service` (start in the
 background instead of creating a systemd user service).
 
@@ -65,7 +67,7 @@ Fully manual alternative:
 python3 -m venv ~/sarness-venv
 ~/sarness-venv/bin/pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 ~/sarness-venv/bin/pip install "./engine[inference]"
-~/sarness-venv/bin/sarness-engine init --host "$(tailscale ip -4)"   # prints the token
+~/sarness-venv/bin/sarness-engine init --host SERVER_ADDRESS   # prints the token
 ~/sarness-venv/bin/sarness-engine install-llama
 ~/sarness-venv/bin/sarness-engine serve
 ```
@@ -91,20 +93,49 @@ sudo apt install ./Sarness_0.1.0_amd64.deb      # or: chmod +x Sarness_0.1.0_amd
 
 First launch shows **Connect to your server**:
 
-| Connection | Host field | Notes |
+| Connection | Server address | Notes |
 |---|---|---|
-| Tailscale IP | `100.x.y.z` | Engine bound with `--bind tailscale`. |
-| Tailscale MagicDNS | `ai-server.tailXXXX.ts.net` | Same, by name. |
-| LAN | `192.168.1.50` | Engine bound with `--bind lan`. |
+| Direct | `192.168.1.50` or `ai-server.example.net` | Engine bound to that interface (`--bind lan`, or the private-network default). |
 | SSH tunnel | Engine address `127.0.0.1`, SSH user/host | Engine bound to loopback; the desktop runs and supervises `ssh -N -L`. |
 | This computer | `127.0.0.1` | Local testing. |
 
-Use **Scan** to find engines on this machine and your online Tailscale devices.
+Pick the **Protocol** (see [3a](#3a-choosing-a-protocol)) and use **Find servers → Scan**
+to look for engines on this computer and on devices the system already knows about.
 Paste the API token, press **Test connection** — you will see the GPU, VRAM,
 RAM, CPU, storage, CUDA/runtime versions, model count, queue and health — then
 **Save & connect**. The token is stored in the GNOME keyring (Secret Service);
 if no keyring is available it falls back to `~/.config/sarness/secrets.json`
 with 0600 permissions. Tokens never appear in logs or in the webview.
+
+## 3a. Choosing a protocol
+
+The desktop can talk to the engine in three ways; the choice is independent of
+whether the connection goes through an SSH tunnel.
+
+| Protocol | Port (default) | What it is |
+|---|---|---|
+| **SNP** | 8744 | Native binary protocol ([SNP.md](SNP.md)): one TLS 1.3 connection, challenge-response authentication bound to the server identity, multiplexed streams, flow control. |
+| **HTTP** | 8742 | The JSON API, unencrypted. Fine on a trusted network or inside an SSH tunnel. |
+| **HTTPS** | 8742 | The JSON API behind a certificate your system trusts. |
+
+**SNP server identity.** The engine creates a self-signed certificate on first
+start. Its fingerprint is the SHA-256 of the public key (`sha256:…`). In the server
+form press **Fetch identity**: the desktop connects once, only to read the
+fingerprint (it sends no credentials), shows it, and stores it only after you
+confirm that it matches the server. From then on a different identity is refused
+with an error that shows the expected and the presented fingerprint; it is never
+accepted automatically and the desktop never falls back to HTTP. If the server
+uses a certificate from a certificate authority, leave the identity empty and enter
+the **Server name** on the certificate instead. A wrong token, a failed server
+proof or a changed identity stop reconnection until you fix the profile and
+reconnect yourself.
+
+**Through an SSH tunnel** the tunnel forwards the SNP port (or the API port for
+HTTP/HTTPS); TLS and authentication still run end-to-end with the server. For a
+tunnelled SNP connection the engine address is usually `127.0.0.1` on the server.
+
+Existing servers keep working: profiles saved by earlier versions open with the
+HTTP or HTTPS protocol they were using.
 
 ## 3b. Servers that already run an AI gateway
 
@@ -124,7 +155,7 @@ add the gateway's `/v1` under **Settings → Remote chat endpoints** with the sa
 
 * The engine requires a bearer token on every endpoint except a minimal health
   check, rate-limits failed authentication, and never logs query strings.
-* Binding defaults to the Tailscale interface or loopback, never `0.0.0.0`
+* Binding defaults to the private-network interface or loopback, never `0.0.0.0`
   (you can force it with `--host 0.0.0.0`; the engine prints a warning).
 * Uploaded files are content-sniffed and verified; file paths are resolved
   inside the data directory only; models are deleted only from the managed
@@ -133,7 +164,7 @@ add the gateway's `/v1` under **Settings → Remote chat endpoints** with the sa
   `trust_remote_code`. Upscalers may be `.pth` files (loaded by spandrel, which
   restricts unpickling to tensors) — only install upscalers from sources you trust.
 * For LAN mode, keep the port closed on your router; traffic is plain HTTP.
-  Prefer Tailscale or SSH for anything beyond a trusted home network.
+  Prefer SNP, HTTPS or an SSH tunnel for anything beyond a trusted home network.
 
 ## 5. Upgrades and backups
 
@@ -141,3 +172,16 @@ add the gateway's `/v1` under **Settings → Remote chat endpoints** with the sa
   `--keep-token`), then update the desktop package.
 * Backup: `~/.local/share/sarness-engine/` (database, outputs, uploads, settings).
   Models can be re-downloaded. Stop the service before copying `sarness.db`.
+
+## Discovery diagnostics and private networks
+
+**Find servers → Scan** reads the devices the system already knows about and probes only
+the engine's health endpoint on them (and on this computer); it never scans ports. When
+Tailscale is installed on the desktop, its online peers are included (`tailscale status
+--json`), their MagicDNS names (`host.tailnet.ts.net`) and `100.x.y.z` addresses work as
+the server address like any other host name or IP, and `--bind tailscale` binds the
+engine to the server's Tailscale address. If a Tailscale peer is not listed:
+
+* check that `tailscale status` works in a terminal on the desktop and the server is online;
+* use the peer's MagicDNS name or its `100.x.y.z` address as the server address;
+* for SNP, fetch the identity again if the server was reinstalled.
