@@ -11,6 +11,7 @@ from typing import Any, AsyncIterator
 
 from ..db import Database, new_id, now
 from ..events import EventBus
+from .reasoning import ThinkSplitter
 from ..runtime.llama import LlamaServer, stream_openai
 from ..settings import Settings
 from ..storage import Storage
@@ -296,15 +297,17 @@ class ChatService:
                 body["model"] = ep_model
                 stream = stream_openai(ep["base_url"], ep.get("api_key"), body)
             try:
+                splitter = ThinkSplitter()
                 async for chunk in stream:
                     if stop.is_set():
                         status = "stopped"
                         break
                     for choice in chunk.get("choices") or []:
                         delta = choice.get("delta") or {}
-                        piece = delta.get("content")
-                        # llama.cpp / vLLM use reasoning_content; Ollama uses reasoning.
-                        think = delta.get("reasoning_content") or delta.get("reasoning")
+                        # llama.cpp / vLLM use reasoning_content; Ollama uses reasoning. Models that leave their
+                        # own <think> delimiters inside content are split by the splitter.
+                        piece, think = splitter.route(delta.get("content"),
+                                                      delta.get("reasoning_content") or delta.get("reasoning"))
                         if piece or think:
                             if first_token_at is None:
                                 first_token_at = time.perf_counter()
@@ -323,6 +326,13 @@ class ChatService:
                         last_save = time.monotonic()
                         self.db.update("messages", assistant["id"], {"content": "".join(content),
                                                                      "reasoning": "".join(reasoning)})
+                piece, think = splitter.finish()
+                if piece or think:
+                    if piece:
+                        content.append(piece)
+                    if think:
+                        reasoning.append(think)
+                    yield {"type": "delta", "content": piece, "reasoning": think}
             finally:
                 if model_ref.startswith("local:"):
                     self.llama.active_streams = max(0, self.llama.active_streams - 1)
@@ -431,12 +441,13 @@ class ChatService:
         content, reasoning = [], []
         calls: dict[int, dict[str, Any]] = {}
         finish, usage, timings = None, None, None
+        splitter = ThinkSplitter()
         try:
             async for chunk in stream:
                 for choice in chunk.get("choices") or []:
                     delta = choice.get("delta") or {}
-                    piece = delta.get("content")
-                    think = delta.get("reasoning_content") or delta.get("reasoning")
+                    piece, think = splitter.route(delta.get("content"),
+                                                  delta.get("reasoning_content") or delta.get("reasoning"))
                     if piece:
                         content.append(piece)
                     if think:
@@ -460,6 +471,13 @@ class ChatService:
                     usage = chunk["usage"]
                 if chunk.get("timings"):
                     timings = chunk["timings"]
+            piece, think = splitter.finish()
+            if piece or think:
+                if piece:
+                    content.append(piece)
+                if think:
+                    reasoning.append(think)
+                yield {"type": "delta", "content": piece, "reasoning": think}
         finally:
             if local:
                 self.llama.active_streams = max(0, self.llama.active_streams - 1)

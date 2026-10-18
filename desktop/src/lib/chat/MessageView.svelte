@@ -1,12 +1,12 @@
 <script lang="ts">
-  import { Brain, Check, ChevronLeft, ChevronRight, Copy, FileText, PencilLine, RefreshCw, TriangleAlert } from '@lucide/svelte';
+  import { Check, ChevronLeft, ChevronRight, Copy, FileText, PencilLine, RefreshCw, TriangleAlert } from '@lucide/svelte';
   import { mediaUrl } from '../api/transport';
   import type { Message } from '../api/types';
   import IconButton from '../ui/IconButton.svelte';
   import Button from '../ui/Button.svelte';
   import TextArea from '../ui/TextArea.svelte';
   import { handleCodeCopy, renderMarkdown } from './markdown';
-  import { prefs } from '../stores/prefs.svelte';
+  import Reasoning from './Reasoning.svelte';
   import logo from '../assets/logo.svg';
 
   interface Props {
@@ -22,7 +22,6 @@
   let editing = $state(false);
   let draft = $state('');
   let copied = $state(false);
-  let showThinking = $state(prefs.chatShowReasoning);
 
   const html = $derived(m.role === 'assistant' ? renderMarkdown(m.content) : '');
   const idx = $derived(sibs.findIndex((s) => s.id === m.id));
@@ -63,10 +62,7 @@
         <div class="bubble selectable">{m.content}</div>
       {/if}
     {:else}
-      {#if m.reasoning}
-        <button class="think" onclick={() => (showThinking = !showThinking)}><Brain />{streaming && !m.content ? 'Thinking…' : 'Reasoning'}<span class="faint">{showThinking ? 'hide' : 'show'}</span></button>
-        {#if showThinking}<div class="reasoning selectable">{m.reasoning}</div>{/if}
-      {/if}
+      <Reasoning reasoning={m.reasoning ?? ''} {streaming} answering={m.content.length > 0} />
       <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
       <div class="md selectable" onclick={handleCodeCopy}>
         {@html html}
@@ -154,9 +150,6 @@
   .md :global(.hljs-deletion) { color: var(--err); }
   .caret { display: inline-block; width: 8px; height: 1.05em; margin-left: 2px; vertical-align: text-bottom; border-radius: 2px; background: var(--lavender); animation: blink 1s steps(2) infinite; }
   @keyframes blink { 50% { opacity: 0; } }
-  .think { display: inline-flex; align-items: center; gap: 7px; align-self: flex-start; padding: 4px 10px; border-radius: var(--r-full); border: 1px solid var(--line-1); background: var(--bg-2); color: var(--text-2); font-size: var(--fs-sm); cursor: pointer; }
-  .think :global(svg) { width: 13px; height: 13px; color: var(--lavender); }
-  .reasoning { padding: 10px 14px; border-left: 2px solid var(--line-2); color: var(--text-2); font-size: var(--fs-sm); white-space: pre-wrap; line-height: 1.6; max-height: 320px; overflow-y: auto; }
   .foot { display: flex; align-items: center; gap: 2px; opacity: 0; transition: opacity var(--t-2) var(--ease); min-height: 24px; }
   .msg:hover .foot, .foot:has(.branch) { opacity: 1; }
   .branch { display: flex; align-items: center; gap: 2px; font-size: var(--fs-xs); color: var(--text-2); margin-right: 4px; }
