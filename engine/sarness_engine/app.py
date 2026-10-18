@@ -90,9 +90,9 @@ def create_app(cfg: EngineConfig, *, start_background: bool = True) -> FastAPI:
 
         app.add_exception_handler(exc_type, _handler)
 
-    from .api import chat, jobs, library, models, system, ws
+    from .api import chat, jobs, library, models, search, system, ws
 
-    for r in (system.router, library.router, jobs.router, models.router, chat.router, chat.agent_router, ws.router,
+    for r in (system.router, library.router, jobs.router, models.router, chat.router, chat.agent_router, search.router, ws.router,
               *experiment_routers()):
         app.include_router(r)
     return app

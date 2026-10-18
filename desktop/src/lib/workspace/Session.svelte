@@ -243,7 +243,7 @@
     statusText = '';
     stick = true;
     try {
-      await streamChat(`/v1/chat/conversations/${c.id}/generate`, { model_ref: modelRef, ...body }, (ev: ChatEvent) => onChatEvent(c.id, ev), abort.signal);
+      await streamChat(`/v1/chat/conversations/${c.id}/generate`, { model_ref: modelRef, ...(mode === 'chat' ? { web_search: prefs.chatWebSearch } : {}), ...body }, (ev: ChatEvent) => onChatEvent(c.id, ev), abort.signal);
     } catch (e) {
       toastError(e, 'Chat failed');
       void reconcile(c.id);
@@ -287,6 +287,9 @@
         if (ev.reasoning) m.reasoning = (m.reasoning ?? '') + ev.reasoning;
       }
       statusText = '';
+    } else if (ev.type === 'search') {
+      const m = msgs.find((x) => x.id === streamingId);
+      if (m) m.search = { query: ev.query, provider: ev.provider, error: ev.error ?? null, sources: ev.sources ?? [] };
     } else if (ev.type === 'status') {
       statusText = ev.text;
     } else if (ev.type === 'title') {
@@ -708,6 +711,7 @@
       <Composer {mode} bind:text={session.draft} bind:el={composerEl} bind:settingsOpen
         placeholder={mode === 'code' ? (ag.project ? 'Describe what to build or fix in this project…' : 'Choose a project folder, then describe the task…') : placeholderFor(mode, chatModel?.name)} {modelOptions} model={modelValue} onmodel={onModel}
         {chips} {attachments} {accept} {attachHint} {uploading} streaming={mode === 'code' ? agent.running : !!streamingId}
+        websearch={mode === 'chat' ? { on: prefs.chatWebSearch, hint: prefs.chatWebSearch ? 'Web search is on: each message is searched first, with sources cited' : 'Search the web for each message and cite sources', toggle: () => { prefs.chatWebSearch = !prefs.chatWebSearch; persistPrefs(); } } : undefined}
         onmode={setMode} onsend={send} onstop={stop} onattach={attach} onremove={removeAttachment}>
         {#snippet agentbar()}
           {#if mode === 'code'}

@@ -8,6 +8,7 @@
   import { api } from '../api/client';
   import { isTauri } from '../api/transport';
   import type { EngineSettings } from '../api/types';
+  import SearchSettings from '../components/SearchSettings.svelte';
   import ServerForm from '../components/ServerForm.svelte';
   import { conn, connect, deleteProfile, disconnect, type Profile } from '../stores/connection.svelte';
   import { loadModels } from '../stores/models.svelte';
@@ -196,6 +197,7 @@
             <p class="small {gw.error ? 'err' : 'faint'}">{gw.error ? `Not reachable: ${gw.error}` : `Connected · ${gw.models.length} models: ${gw.models.map((m) => m.replace(/^gw:/, '')).join(', ')}`}</p>
           {/if}
         </div>
+        <SearchSettings {s} {patch} />
         <div class="group">
           <h3>Hugging Face</h3>
           <Field label="Access token" hint={s.hf_token ? 'A token is stored on the server. Enter a new one to replace it.' : 'Needed only for gated models. Stored on the server, never shown again.'}>

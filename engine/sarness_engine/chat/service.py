@@ -14,6 +14,7 @@ from ..events import EventBus
 from .reasoning import ThinkSplitter
 from ..runtime.llama import LlamaServer, stream_openai
 from ..settings import Settings
+from ..search import WebSearch
 from ..storage import Storage
 
 log = logging.getLogger("sarness.chat")
@@ -22,6 +23,10 @@ SAMPLING_KEYS = ("temperature", "top_p", "top_k", "min_p", "repeat_penalty", "pr
                  "frequency_penalty", "max_tokens", "seed")
 TEXT_MIME = ("text/plain", "text/markdown", "application/json", "text/csv")
 MAX_TEXT_ATTACHMENT = 200_000
+
+
+class _SearchStopped(Exception):
+    """The reader stopped the reply while web search was still running."""
 
 
 class ChatError(Exception):
@@ -40,6 +45,7 @@ class ChatService:
         self.llama = llama
         self.registry = registry
         self.jobs = jobs
+        self.websearch = WebSearch(settings)
         self._stops: dict[str, asyncio.Event] = {}
         self._load_lock = asyncio.Lock()
 
@@ -287,6 +293,21 @@ class ChatService:
         first_token_at = None
         last_save = time.monotonic()
         try:
+            # Web search belongs to normal Chat only; it runs when the reader asked for it (or the policy says so).
+            query = _search_query(path)
+            if query and (req.get("web_search") is True or
+                          (req.get("web_search") is None and self.settings.get("search_policy") == "always")):
+                yield {"type": "search", "phase": "started", "query": query}
+                outcome = await self.websearch.run(query, stop)
+                if stop.is_set():
+                    raise _SearchStopped
+                stats["search"] = outcome.public()
+                if outcome.usable:
+                    yield {"type": "search", "phase": "results", **outcome.public()}
+                else:
+                    yield {"type": "search", "phase": "unavailable", **outcome.public()}
+                note = self.websearch.system_block(outcome)
+                body["messages"] = _with_system_note(body["messages"], note)
             if model_ref.startswith("local:"):
                 if self.llama.status()["model_id"] != model_id:
                     yield {"type": "status", "text": "Loading model…"}
@@ -340,6 +361,8 @@ class ChatService:
         except asyncio.CancelledError:
             status = "stopped"
             raise
+        except _SearchStopped:
+            status = "stopped"
         except ChatError as exc:
             status = "error"
             stats["error"] = str(exc)
@@ -557,6 +580,21 @@ class ChatService:
         leaf = idmap.get(src.get("active_leaf_id"))
         self.db.update("conversations", conv["id"], {"active_leaf_id": leaf})
         return self.get(conv["id"])
+
+
+def _search_query(path: list[dict[str, Any]]) -> str:
+    """The text of the user turn being answered, as a search query (no attachments-only turns)."""
+    last = path[-1] if path else None
+    if not last or last["role"] != "user":
+        return ""
+    return " ".join((last.get("content") or "").split())[:300]
+
+
+def _with_system_note(messages: list[dict[str, Any]], note: str) -> list[dict[str, Any]]:
+    """Adds ``note`` to the system message (chat templates generally require it first)."""
+    if messages and messages[0]["role"] == "system":
+        return [{"role": "system", "content": f"{messages[0]['content']}\n\n{note}"}, *messages[1:]]
+    return [{"role": "system", "content": note}, *messages]
 
 
 def _title_from(text: str) -> str:

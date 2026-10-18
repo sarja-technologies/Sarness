@@ -957,6 +957,24 @@
    "params": [
     "body"
    ]
+  },
+  {
+   "op": "search.status",
+   "method": "GET",
+   "route": "/v1/search/status",
+   "handler": "api.search:search_status",
+   "mode": "unary",
+   "params": []
+  },
+  {
+   "op": "search.test",
+   "method": "POST",
+   "route": "/v1/search/test",
+   "handler": "api.search:search_test",
+   "mode": "unary",
+   "params": [
+    "body"
+   ]
   }
  ]
 }

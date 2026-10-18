@@ -17,6 +17,8 @@ interface Prefs {
   projectId: string | null;
   folderId: string | null;
   chatShowReasoning: boolean;
+  /** Chat: search the web for each message. */
+  chatWebSearch: boolean;
   reduceMotion: boolean;
   theme: 'light' | 'dark' | 'system';
   lastChatModel: string | null;
@@ -36,6 +38,7 @@ const defaults: Prefs = {
   projectId: null,
   folderId: null,
   chatShowReasoning: false,
+  chatWebSearch: false,
   reduceMotion: false,
   theme: 'light',
   lastChatModel: null,

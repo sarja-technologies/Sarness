@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ArrowUp, Clapperboard, Code2, Image as ImageIcon, MessagesSquare, Paperclip, SlidersHorizontal, Square, X } from '@lucide/svelte';
+  import { ArrowUp, Clapperboard, Code2, Globe, Image as ImageIcon, MessagesSquare, Paperclip, SlidersHorizontal, Square, X } from '@lucide/svelte';
   import type { Snippet } from 'svelte';
   import Select from '../ui/Select.svelte';
   import Spinner from '../ui/Spinner.svelte';
@@ -29,6 +29,8 @@
     settingsOpen: boolean;
     settings: Snippet;
     agentbar?: Snippet;
+    /** Chat only: the web-search switch. Absent in the other modes. */
+    websearch?: { on: boolean; toggle: () => void; hint: string };
     onmode: (m: Mode) => void;
     onsend: () => void;
     onstop: () => void;
@@ -37,7 +39,7 @@
   }
   let {
     mode, text = $bindable(), el = $bindable(null), placeholder, modelOptions, model, onmodel, chips, attachments, accept, attachHint,
-    uploading = false, streaming, settingsOpen = $bindable(), settings, agentbar, onmode, onsend, onstop, onattach, onremove,
+    uploading = false, streaming, settingsOpen = $bindable(), settings, agentbar, websearch, onmode, onsend, onstop, onattach, onremove,
   }: Props = $props();
 
   const icons = { chat: MessagesSquare, code: Code2, image: ImageIcon, video: Clapperboard } as const;
@@ -116,6 +118,11 @@
       <button type="button" class="settingsbtn" class:on={settingsOpen} aria-expanded={settingsOpen} onclick={() => (settingsOpen = !settingsOpen)}>
         <SlidersHorizontal /><span>{MODE_LABEL[mode]} settings</span>
       </button>
+      {#if websearch}
+        <button type="button" class="settingsbtn" class:on={websearch.on} aria-pressed={websearch.on} title={websearch.hint} onclick={websearch.toggle}>
+          <Globe /><span>Web search</span>
+        </button>
+      {/if}
       <div class="chips" aria-live="polite">{#each chips as c (c)}<span class="chip">{c}</span>{/each}</div>
       <div class="spacer"></div>
       {#if streaming}

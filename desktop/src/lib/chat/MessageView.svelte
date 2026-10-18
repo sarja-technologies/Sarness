@@ -7,6 +7,8 @@
   import TextArea from '../ui/TextArea.svelte';
   import { handleCodeCopy, renderMarkdown } from './markdown';
   import Reasoning from './Reasoning.svelte';
+  import WebSources from './WebSources.svelte';
+  import { linkCitations } from './citations';
   import logo from '../assets/logo.svg';
 
   interface Props {
@@ -23,7 +25,8 @@
   let draft = $state('');
   let copied = $state(false);
 
-  const html = $derived(m.role === 'assistant' ? renderMarkdown(m.content) : '');
+  const search = $derived(m.search ?? m.stats?.search);
+  const html = $derived(m.role === 'assistant' ? linkCitations(renderMarkdown(m.content), search?.sources) : '');
   const idx = $derived(sibs.findIndex((s) => s.id === m.id));
   const stats = $derived(m.stats ?? {});
 
@@ -62,12 +65,14 @@
         <div class="bubble selectable">{m.content}</div>
       {/if}
     {:else}
+      {#if search}<WebSources {search} running={streaming && !m.content && !m.reasoning} />{/if}
       <Reasoning reasoning={m.reasoning ?? ''} {streaming} answering={m.content.length > 0} />
       <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
       <div class="md selectable" onclick={handleCodeCopy}>
         {@html html}
         {#if streaming}<span class="caret"></span>{/if}
       </div>
+      {#if search?.sources.length && !streaming}<WebSources {search} running={false} list />{/if}
       {#if m.status === 'error'}<p class="errtxt"><TriangleAlert />{stats.error ?? 'Generation failed'}</p>{/if}
       {#if m.status === 'stopped'}<p class="faint small">Stopped</p>{/if}
       {#if m.status === 'partial' && !streaming}<p class="errtxt"><TriangleAlert />Reply incomplete: the connection was interrupted. Use Regenerate to try again.</p>{/if}
@@ -127,6 +132,8 @@
   .md :global(ul), .md :global(ol) { margin: 0 0 0.8em; padding-left: 1.4em; }
   .md :global(li) { margin: 0.25em 0; }
   .md :global(a) { color: var(--accent-hi); }
+  .md :global(a.cite) { display: inline-grid; place-items: center; min-width: 16px; height: 16px; padding: 0 3px; margin: 0 1px; border-radius: 8px; background: var(--bg-3); color: var(--text-1); font-size: 10.5px; font-weight: 600; text-decoration: none; vertical-align: 2px; }
+  .md :global(a.cite:hover) { background: var(--accent); color: var(--text-inv); }
   .md :global(blockquote) { margin: 0 0 0.8em; padding: 2px 14px; border-left: 3px solid var(--accent); color: var(--text-1); }
   .md :global(code:not(.hljs)) { padding: 1px 6px; border-radius: 5px; background: rgba(var(--fg-rgb), 0.07); font-size: 0.88em; }
   .md :global(table) { border-collapse: collapse; margin: 0 0 0.9em; font-size: 0.95em; }
