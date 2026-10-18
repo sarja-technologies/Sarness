@@ -17,6 +17,9 @@ from .api.deps import AppState
 from .chat.service import ChatError, ChatService
 from .config import EngineConfig
 from .db import Database
+from .experiments import build_registry
+from .experiments import routers as experiment_routers
+from .experiments.documents import Documents
 from .events import EventBus
 from .jobs.service import JobError, JobService
 from .models.downloads import DownloadError, DownloadManager
@@ -46,6 +49,7 @@ def create_app(cfg: EngineConfig, *, start_background: bool = True) -> FastAPI:
         st.downloads.recover()
         await asyncio.to_thread(st.registry.scan)
         tasks = []
+        await st.experiments.startup()
         if start_background:
             st.jobs.start()
             tasks.append(asyncio.create_task(_stats_loop(st)))
@@ -56,6 +60,7 @@ def create_app(cfg: EngineConfig, *, start_background: bool = True) -> FastAPI:
         finally:
             for t in tasks:
                 t.cancel()
+            await st.experiments.shutdown()
             await st.jobs.shutdown()
             await asyncio.to_thread(st.llama.unload)
             st.db.close()
@@ -87,7 +92,8 @@ def create_app(cfg: EngineConfig, *, start_background: bool = True) -> FastAPI:
 
     from .api import chat, jobs, library, models, system, ws
 
-    for r in (system.router, library.router, jobs.router, models.router, chat.router, chat.agent_router, ws.router):
+    for r in (system.router, library.router, jobs.router, models.router, chat.router, chat.agent_router, ws.router,
+              *experiment_routers()):
         app.include_router(r)
     return app
 
@@ -117,9 +123,12 @@ def _build_state(cfg: EngineConfig) -> AppState:
         "headroom_mb": settings.get("vram_headroom_mb"),
     }, gateway=gateway)
     chat = ChatService(db, bus, settings, storage, llama, registry, jobs)
-    return AppState(cfg=cfg, db=db, bus=bus, settings=settings, storage=storage, registry=registry,
-                    downloads=downloads, models=model_service, llama_runtime=runtime, llama=llama, jobs=jobs,
-                    chat=chat, gateway=gateway, started_at=time.time())
+    st = AppState(cfg=cfg, db=db, bus=bus, settings=settings, storage=storage, registry=registry,
+                  downloads=downloads, models=model_service, llama_runtime=runtime, llama=llama, jobs=jobs,
+                  chat=chat, gateway=gateway, started_at=time.time(), experiment_docs=Documents(db))
+    st.experiments = build_registry(st)
+    jobs.experiments = st.experiments
+    return st
 
 
 async def _gateway_loop(st: AppState) -> None:

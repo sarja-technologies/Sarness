@@ -75,6 +75,7 @@ class Gateway:
         self.settings = settings
         self.last_error: str | None = None
         self.last_models: list[dict[str, Any]] = []
+        self._health: tuple[float, dict[str, Any]] = (0.0, {})
 
     # ------------------------------------------------------------- config
     @property
@@ -132,6 +133,32 @@ class Gateway:
                                  "vram_mb": None, "vram_offload_mb": None,
                                  "tags": ["server-gateway"]}},
         }
+
+    # ------------------------------------------------------------ GPU sharing
+    async def health(self, max_age: float = 2.0) -> dict[str, Any]:
+        """Cached ``GET /health`` (no auth); ``{}`` when unreachable."""
+        ts, data = self._health
+        if not self.configured or time.time() - ts < max_age:
+            return data if self.configured else {}
+        try:
+            async with httpx.AsyncClient(base_url=self.base_url, timeout=3) as c:
+                r = await c.get("/health")
+                data = r.json() if r.status_code == 200 else {}
+        except Exception:
+            data = {}
+        self._health = (time.time(), data)
+        return data
+
+    async def busy_job(self) -> str | None:
+        """Id of the GPU job the gateway is running (for any client), if any."""
+        return (await self.health()).get("gpu_worker_current_job")
+
+    async def unload_llm(self) -> list[str]:
+        """Asks the gateway to unload its resident Ollama chat models (frees their VRAM)."""
+        async with self._client(timeout=90) as c:
+            r = await c.post("/models/unload")
+            _check(r)
+            return list(r.json().get("unloaded") or [])
 
     # -------------------------------------------------------------- jobs
     async def run(self, *, kind: str, gateway_id: str, simple: dict[str, Any], files: dict[str, str],

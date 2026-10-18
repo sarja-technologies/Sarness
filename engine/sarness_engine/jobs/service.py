@@ -49,6 +49,8 @@ class JobService:
         self.llama = llama
         self.gateway = gateway
         self._remote: dict[str, Any] | None = None   # {"job_id", "task", "cancel", "remote_id"} for a gateway job
+        # Experiments that also use the GPU (set by the app); jobs take precedence over them.
+        self.experiments = None
         self.supervisor = WorkerSupervisor(worker_options, self._on_worker_message, self._on_worker_crash)
         self._live: dict[str, dict[str, Any]] = {}   # in-memory progress for running jobs
         self._last_flush: dict[str, float] = {}
@@ -199,6 +201,16 @@ class JobService:
         rows = self.db.all("SELECT status, COUNT(*) c FROM jobs GROUP BY status")
         return {r["status"]: r["c"] for r in rows}
 
+    def gpu_job_reason(self) -> str | None:
+        """Why the GPU belongs to the job queue right now (``None`` when no job is running or waiting)."""
+        if self._remote is not None:
+            return "An image or video job is running on the server's AI gateway"
+        if self.supervisor.busy or self._dispatching:
+            return "An image or video job is using the GPU"
+        if self.db.scalar("SELECT COUNT(*) FROM jobs WHERE status = 'queued'"):
+            return "An image or video job is waiting for the GPU"
+        return None
+
     # -------------------------------------------------------------- control
     def cancel(self, job_id: str) -> dict[str, Any]:
         job = self.get(job_id)
@@ -259,6 +271,9 @@ class JobService:
         job = self.db.one("SELECT * FROM jobs WHERE status = 'queued' ORDER BY created_at LIMIT 1")
         if not job:
             return
+        if self.experiments is not None and self.experiments.gpu_active():
+            # Interactive experiments hold VRAM between requests; a queued job takes the card back.
+            await self.experiments.yield_gpu(f"job {job['id']}")
         ok, reason = await asyncio.to_thread(self._admit, job)
         if not ok:
             if self._wait_reason.get(job["id"]) != reason:

@@ -33,6 +33,10 @@ DEFAULTS: dict[str, Any] = {
     "oom_retry_with_offload": True,
     # Maximum number of automatic restarts a single job may survive.
     "job_max_attempts": 2,
+    # Experiments: minutes of inactivity before the large (refine) models are dropped from VRAM,
+    # and before the experiment worker exits entirely (frees all of its VRAM). 0 disables.
+    "experiments_refine_idle_minutes": 3,
+    "experiments_worker_idle_minutes": 10,
 }
 
 SECRET_KEYS = {"hf_token", "gateway_token"}
