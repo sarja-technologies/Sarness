@@ -1095,6 +1095,60 @@ async fn subscription_requires_the_events_feature() {
     assert!(matches!(e, SnpError::Protocol(ref m) if m.contains("events")));
 }
 
+// ------------------------------------------------------------ test connection
+#[tokio::test]
+async fn test_connection_reports_the_negotiated_session_without_secrets() {
+    let s = fake::start().await;
+    let r = crate::check_snp(cfg(&s)).await;
+    assert!(r.ok, "{}", r.message);
+    assert_eq!((r.stage.as_str(), r.transport.as_str()), ("ok", "snp"));
+    let info = r.snp.as_ref().unwrap();
+    assert_eq!((info.version, info.server.as_str(), info.api_version.as_str()), (1, "fake-snp/1.0", "1.9"));
+    assert!(info.features.iter().any(|f| f == "events"));
+    assert_eq!(info.limits.max_frame, 65_536);
+    assert_eq!(info.pin, s.pin());
+    assert_eq!(info.fingerprint, Pin::parse(&s.pin()).unwrap().fingerprint());
+    assert!(r.latency_ms.is_some() && r.health.is_some() && r.system.is_some());
+    let json = serde_json::to_string(&r).unwrap();
+    assert!(!json.contains(TOKEN), "the API token must never be reported");
+    assert!(!json.contains(&hex::encode(super::client::token_key(TOKEN))), "nor its hash");
+    assert_eq!(s.knobs.opens_of("system.health").len(), 1);
+}
+
+#[tokio::test]
+async fn test_connection_failures_name_the_stage_and_carry_both_pins() {
+    let s = fake::start().await;
+    let wrong = Pin::parse(&format!("sha256:{}", "00".repeat(32))).unwrap();
+    let mut c = cfg(&s);
+    c.pin = Some(wrong);
+    let r = crate::check_snp(c).await;
+    assert!(!r.ok);
+    assert_eq!((r.stage.as_str(), r.error_kind.as_deref()), ("identity", Some("pin_mismatch")));
+    assert_eq!(r.expected_pin.as_deref(), Some(wrong.to_string().as_str()));
+    assert_eq!(r.presented_pin.as_deref(), Some(s.pin().as_str()));
+    assert!(r.message.contains(&s.pin()) && r.message.contains(&wrong.to_string()));
+
+    let mut c = cfg(&s);
+    c.token_key = super::client::token_key("nope");
+    let r = crate::check_snp(c).await;
+    assert_eq!((r.stage.as_str(), r.error_kind.as_deref()), ("auth", Some("auth")));
+
+    s.knobs.unsupported_version.store(true, SeqCst);
+    let r = crate::check_snp(cfg(&s)).await;
+    assert_eq!((r.stage.as_str(), r.error_kind.as_deref()), ("version", Some("version")));
+
+    s.knobs.unsupported_version.store(false, SeqCst);
+    s.knobs.bad_server_proof.store(true, SeqCst);
+    let r = crate::check_snp(cfg(&s)).await;
+    assert_eq!((r.stage.as_str(), r.error_kind.as_deref()), ("server_proof", Some("server_proof")));
+
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    drop(l);
+    let r = crate::check_snp(SnpConfig::new("127.0.0.1", port, Some(wrong), TOKEN)).await;
+    assert_eq!((r.stage.as_str(), r.error_kind.as_deref()), ("connect", Some("refused")));
+}
+
 // ===========================================================================
 // Loopback adapter (HTTP/JSON -> SNP) through the real proxy
 // ===========================================================================
