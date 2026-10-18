@@ -1,68 +1,76 @@
 <script lang="ts">
-  import { Boxes, ChevronsUpDown, Clapperboard, FolderPlus, Image, LayoutDashboard, Library, MessagesSquare, PanelLeftClose, Server, Code2, Search, PanelLeftOpen, Plus, Settings } from '@lucide/svelte';
-  import logo from '../assets/logo.svg';
-  import { prefs, persistPrefs, type View } from '../stores/prefs.svelte';
-  import { activeJobs } from '../stores/jobs.svelte';
-  import { createProject, currentFolder, currentProject, folderTree, projects, selectProject } from '../stores/projects.svelte';
-  import { tooltip } from '../ui/tooltip';
-  import { promptDialog } from '../ui/dialogs.svelte';
-  import { toastError } from '../stores/toast.svelte';
-  import Menu, { type MenuItem } from '../ui/Menu.svelte';
+  import { Boxes, ChevronsUpDown, FolderPlus, Library, PanelLeftClose, PanelLeftOpen, Plus, Search, Server, Settings, SquarePen } from '@lucide/svelte';
   import { api, qs } from '../api/client';
   import type { Conversation } from '../api/types';
+  import logo from '../assets/logo.svg';
   import { conn } from '../stores/connection.svelte';
-  import { addPane, openConversation, openPane, type PaneKind } from '../stores/panes.svelte';
-  import { ago } from '../util/format';
+  import { jobs } from '../stores/jobs.svelte';
+  import { openSession, startNewConversation, ws } from '../stores/panes.svelte';
+  import { prefs, persistPrefs, type View } from '../stores/prefs.svelte';
+  import { createProject, currentFolder, currentProject, folderTree, projects, selectProject } from '../stores/projects.svelte';
+  import { store } from '../stores/sessions.svelte';
+  import { groupByRecency, isEmpty, matchesQuery, type Session } from '../stores/sessions';
+  import { toastError } from '../stores/toast.svelte';
+  import { promptDialog } from '../ui/dialogs.svelte';
+  import Menu, { type MenuItem } from '../ui/Menu.svelte';
+  import { tooltip } from '../ui/tooltip';
+  import { deleteSession, renameSession } from '../workspace/sessionActions';
+  import { MODE_LABEL } from '../workspace/params';
 
-  const kinds: { kind: PaneKind; label: string; icon: any }[] = [
-    { kind: 'chat', label: 'Chat', icon: MessagesSquare },
-    { kind: 'code', label: 'Code', icon: Code2 },
-    { kind: 'image', label: 'Image', icon: Image },
-    { kind: 'video', label: 'Video', icon: Clapperboard },
+  const collapsed = $derived(prefs.sidebarCollapsed);
+  const links: { id: View; label: string; icon: any; key: string }[] = [
+    { id: 'library', label: 'Library', icon: Library, key: 'Alt+2' },
+    { id: 'models', label: 'Models', icon: Boxes, key: 'Alt+3' },
+    { id: 'system', label: 'Server', icon: Server, key: 'Alt+4' },
+    { id: 'settings', label: 'Settings', icon: Settings, key: 'Alt+5' },
   ];
-  function newSession(kind: PaneKind) {
-    if (!addPane(kind)) openPane(kind);
+
+  function go(v: View) {
+    prefs.view = v;
+    persistPrefs();
+  }
+  function newConversation() {
+    startNewConversation();
+    go('workspace');
+  }
+  function open(s: Session) {
+    openSession(s.id);
     go('workspace');
   }
 
+  // ---- history + search -------------------------------------------------
   let q = $state('');
-  let found = $state<Conversation[]>([]);
+  let hits = $state(new Set<string>());
   let timer: ReturnType<typeof setTimeout>;
   $effect(() => {
     const term = q.trim();
     clearTimeout(timer);
     if (!term || conn.state !== 'online') {
-      found = [];
+      hits = new Set();
       return;
     }
     timer = setTimeout(async () => {
       try {
-        found = (await api.get<Conversation[]>(`/v1/chat/conversations${qs({ q: term })}`)).slice(0, 8);
+        hits = new Set((await api.get<Conversation[]>(`/v1/chat/conversations${qs({ q: term })}`)).map((c) => c.id));
       } catch {
-        found = [];
+        hits = new Set();
       }
     }, 250);
   });
-  function openFound(c: Conversation) {
-    openConversation(c.id, c.system_prompt?.startsWith('You are Sarness Code') ? 'code' : 'chat');
-    go('workspace');
-    q = '';
-  }
+  const visible = $derived(store.list.filter((s) => !isEmpty(s) && matchesQuery(s, q, hits)));
+  const groups = $derived(groupByRecency(visible));
+  const activeId = $derived(ws.panes.find((p) => p.id === ws.focus)?.sessionId);
+  const busy = (s: Session) => s.entries.some((e) => {
+    const j = jobs.byId[e.jobId];
+    return j && (j.status === 'queued' || j.status === 'running');
+  });
 
-  const nav: { id: View; label: string; icon: any; key: string }[] = [
-    { id: 'workspace', label: 'Workspace', icon: LayoutDashboard, key: 'Alt+1' },
-    { id: 'library', label: 'Library', icon: Library, key: 'Alt+2' },
-    { id: 'models', label: 'Models', icon: Boxes, key: 'Alt+3' },
-    { id: 'system', label: 'Server', icon: Server, key: 'Alt+4' },
-  ];
-
-  const imgActive = $derived(activeJobs('image').length);
-  const vidActive = $derived(activeJobs('video').length);
-  const collapsed = $derived(prefs.sidebarCollapsed);
-
-  function go(v: View) {
-    prefs.view = v;
-    persistPrefs();
+  function context(e: MouseEvent, s: Session) {
+    e.preventDefault();
+    menu = { open: true, x: e.clientX, y: e.clientY, items: [
+      { label: 'Rename', run: () => renameSession(s) },
+      { label: 'Delete', danger: true, run: () => deleteSession(s) },
+    ] };
   }
 
   let menu = $state({ open: false, x: 0, y: 0, items: [] as MenuItem[] });
@@ -98,63 +106,52 @@
   const folderLabel = $derived(currentFolder()?.name ?? null);
 </script>
 
-<aside class="sidebar" class:collapsed>
+<aside class="sidebar" class:collapsed aria-label="Sidebar">
   <div class="brand">
     <img src={logo} alt="" width="28" height="28" />
     {#if !collapsed}<span class="word">Sarness</span>{/if}
   </div>
 
-  <button class="project" onclick={openProjects} use:tooltip={collapsed ? `Project: ${projectLabel}` : null}>
-    <span class="dot" style:background={currentProject() ? 'var(--accent-hi)' : 'var(--text-3)'}></span>
-    {#if !collapsed}
+  <button class="new" onclick={newConversation} use:tooltip={collapsed ? 'New conversation' : null}>
+    <SquarePen />{#if !collapsed}<span>New conversation</span>{/if}
+  </button>
+
+  {#if !collapsed}
+    <label class="search"><Search /><input bind:value={q} placeholder="Search conversations" aria-label="Search conversations" /></label>
+
+    <button class="project" onclick={openProjects}>
+      <span class="dot" style:background={currentProject() ? 'var(--accent-hi)' : 'var(--text-3)'}></span>
       <span class="ptext">
         <span class="pname truncate">{projectLabel}</span>
         {#if folderLabel}<span class="pfolder truncate">{folderLabel}</span>{/if}
       </span>
       <ChevronsUpDown />
-    {/if}
-  </button>
+    </button>
 
-  <nav>
-    {#each nav as item (item.id)}
-      {@const count = item.id === 'workspace' ? imgActive + vidActive : 0}
-      <button class="item" class:active={prefs.view === item.id} onclick={() => go(item.id)} use:tooltip={collapsed ? `${item.label}  ·  ${item.key}` : null}>
-        <item.icon />
-        {#if !collapsed}<span class="label">{item.label}</span>{/if}
-        {#if count}<span class="count" class:mini={collapsed}>{collapsed ? '' : count}</span>{/if}
-      </button>
-    {/each}
-  </nav>
-
-  {#if !collapsed}
-    <div class="sessions">
-      <div class="sect">New session</div>
-      <div class="kinds">
-        {#each kinds as k (k.kind)}
-          <button class="kbtn" onclick={() => newSession(k.kind)}><k.icon />{k.label}</button>
+    <nav class="history" aria-label="Conversation history">
+      {#each groups as g (g.label)}
+        <div class="sect">{g.label}</div>
+        {#each g.items as s (s.id)}
+          <button class="item" class:active={s.id === activeId} onclick={() => open(s)} oncontextmenu={(e) => context(e, s)} title={s.title}>
+            <span class="t truncate">{s.title}</span>
+            {#if busy(s)}<span class="run" title="Generating"></span>{:else}<span class="m">{MODE_LABEL[s.mode]}</span>{/if}
+          </button>
         {/each}
-      </div>
-      <label class="search"><Search /><input bind:value={q} placeholder="Search conversations" aria-label="Search conversations" /></label>
-      {#each found as c (c.id)}
-        <button class="found" onclick={() => openFound(c)}><span class="truncate">{c.title}</span><span class="faint">{ago(c.updated_at)}</span></button>
       {/each}
-      {#if q.trim() && !found.length}<p class="faint none">No matches</p>{/if}
-    </div>
+      {#if !visible.length}<p class="none faint">{q.trim() ? 'No matches' : 'Your conversations appear here'}</p>{/if}
+    </nav>
   {:else}
-    {#each kinds as k (k.kind)}
-      <button class="item" onclick={() => newSession(k.kind)} use:tooltip={`New ${k.label.toLowerCase()} session`}><k.icon /></button>
-    {/each}
+    <div class="grow"></div>
   {/if}
 
-  <div class="spacer"></div>
-
   <div class="bottom">
-    <button class="item" class:active={prefs.view === 'settings'} onclick={() => go('settings')} use:tooltip={collapsed ? 'Settings  ·  Alt+5' : null}>
-      <Settings />
-      {#if !collapsed}<span class="label">Settings</span>{/if}
-    </button>
-    <button class="item subtle" onclick={() => { prefs.sidebarCollapsed = !collapsed; persistPrefs(); }} use:tooltip={collapsed ? 'Expand sidebar  ·  Ctrl+B' : null}>
-      {#if collapsed}<PanelLeftOpen />{:else}<PanelLeftClose /><span class="label">Collapse</span>{/if}
+    {#each links as l (l.id)}
+      <button class="link" class:active={prefs.view === l.id} onclick={() => go(l.id)} use:tooltip={collapsed ? `${l.label}  ·  ${l.key}` : null}>
+        <l.icon />{#if !collapsed}<span>{l.label}</span>{/if}
+      </button>
+    {/each}
+    <button class="link subtle" onclick={() => { prefs.sidebarCollapsed = !collapsed; persistPrefs(); }} use:tooltip={collapsed ? 'Expand sidebar  ·  Ctrl+B' : null}>
+      {#if collapsed}<PanelLeftOpen />{:else}<PanelLeftClose /><span>Collapse</span>{/if}
     </button>
   </div>
 </aside>
@@ -162,19 +159,17 @@
 <Menu bind:open={menu.open} bind:x={menu.x} bind:y={menu.y} bind:items={menu.items} />
 
 <style>
-  .sidebar {
-    grid-row: 1 / span 2;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    padding: 12px 10px 10px;
-    background: var(--bg-1);
-    min-width: 0;
-    overflow: hidden;
-  }
-  .brand { display: flex; align-items: center; gap: 10px; padding: 4px 6px 10px; height: 44px; }
+  .sidebar { grid-row: 1 / span 2; display: flex; flex-direction: column; gap: 8px; padding: 12px 10px 10px; background: var(--bg-1); min-width: 0; overflow: hidden; }
+  .brand { display: flex; align-items: center; gap: 10px; padding: 4px 6px 6px; height: 40px; }
   .brand img { flex-shrink: 0; border-radius: 8px; }
   .word { font-weight: 650; font-size: 16px; letter-spacing: -0.02em; color: var(--text-0); }
+  .new { display: flex; align-items: center; gap: 10px; height: 38px; padding: 0 10px; border-radius: var(--r-md); border: 1px solid var(--line-1); background: var(--bg-0); color: var(--text-0); font-weight: 600; font-size: var(--fs-md); cursor: pointer; transition: border-color var(--t-1), background var(--t-1); }
+  .new:hover { border-color: var(--accent); }
+  .new :global(svg) { width: 16px; height: 16px; color: var(--accent); flex-shrink: 0; }
+  .search { display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px; border-radius: var(--r-md); border: 1px solid var(--line-1); background: var(--bg-0); color: var(--text-3); }
+  .search :global(svg) { width: 14px; height: 14px; flex-shrink: 0; }
+  .search input { flex: 1; min-width: 0; border: 0; background: none; color: var(--text-0); outline: none; font-size: var(--fs-sm); }
+  .search:focus-within { border-color: var(--select-line); }
   .project {
     display: flex;
     align-items: center;
@@ -196,67 +191,23 @@
   .ptext { display: flex; flex-direction: column; flex: 1; min-width: 0; line-height: 1.25; }
   .pname { font-weight: 600; font-size: var(--fs-md); color: var(--text-0); }
   .pfolder { font-size: var(--fs-xs); color: var(--text-3); }
-  nav, .bottom { display: flex; flex-direction: column; gap: 2px; }
-  .item {
-    position: relative;
-    display: flex;
-    align-items: center;
-    gap: 11px;
-    height: 36px;
-    padding: 0 10px;
-    border: 0;
-    border-radius: var(--r-md);
-    background: transparent;
-    color: var(--text-2);
-    font-weight: 550;
-    cursor: pointer;
-    white-space: nowrap;
-    transition: background var(--t-1) var(--ease), color var(--t-1) var(--ease);
-  }
-  .item :global(svg) { width: 18px; height: 18px; flex-shrink: 0; transition: transform var(--t-2) var(--ease); }
-  .item:hover { background: rgba(var(--fg-rgb), 0.045); color: var(--text-0); }
+  .history { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; margin: 4px -4px 0; padding: 0 4px; }
+  .sect { padding: 10px 8px 4px; font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3); }
+  .item { display: flex; align-items: center; gap: 8px; width: 100%; height: 34px; padding: 0 10px; border: 0; border-radius: var(--r-md); background: none; color: var(--text-1); cursor: pointer; text-align: left; font-size: var(--fs-md); transition: background var(--t-1); }
+  .item:hover { background: rgba(var(--fg-rgb), 0.05); color: var(--text-0); }
   .item.active { background: var(--select-bg); color: var(--text-0); }
-  .item.active :global(svg) { color: var(--lavender); }
-  .item.active::before {
-    content: '';
-    position: absolute;
-    left: -10px;
-    top: 9px;
-    bottom: 9px;
-    width: 3px;
-    border-radius: 0 3px 3px 0;
-    background: var(--accent-hi);
-  }
-  .label { flex: 1; text-align: left; }
-  .count {
-    min-width: 20px;
-    height: 18px;
-    padding: 0 6px;
-    border-radius: 9px;
-    background: var(--accent);
-    color: var(--text-inv);
-    font-size: 11px;
-    font-weight: 700;
-    display: grid;
-    place-items: center;
-    animation: pulse-ring 1.8s infinite;
-  }
-  .count.mini { position: absolute; top: 7px; right: 7px; min-width: 8px; width: 8px; height: 8px; padding: 0; }
+  .t { flex: 1; min-width: 0; }
+  .m { font-size: 10.5px; color: var(--text-3); }
+  .run { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: pulse-ring 1.8s infinite; flex-shrink: 0; }
+  .none { padding: 12px 10px; font-size: var(--fs-sm); }
+  .grow { flex: 1; }
+  .bottom { display: flex; flex-direction: column; gap: 1px; padding-top: 6px; border-top: 1px solid var(--line-0); }
+  .link { position: relative; display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border: 0; border-radius: var(--r-md); background: none; color: var(--text-2); cursor: pointer; font-size: var(--fs-md); text-align: left; }
+  .link :global(svg) { width: 16px; height: 16px; flex-shrink: 0; }
+  .link:hover { background: rgba(var(--fg-rgb), 0.05); color: var(--text-0); }
+  .link.active { background: var(--select-bg); color: var(--text-0); }
+  .link.active :global(svg) { color: var(--accent); }
   .subtle { color: var(--text-3); }
-  .spacer { flex: 1; }
-  .sessions { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line-0); min-height: 0; overflow: auto; }
-  .sect { font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3); padding: 0 6px; }
-  .kinds { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
-  .kbtn { display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 8px; border-radius: var(--r-sm); border: 1px solid var(--line-1); background: var(--bg-0); color: var(--text-1); font-size: var(--fs-sm); cursor: pointer; }
-  .kbtn:hover { border-color: var(--accent); color: var(--text-0); }
-  .kbtn :global(svg) { width: 14px; height: 14px; color: var(--accent); }
-  .search { display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 8px; border-radius: var(--r-sm); border: 1px solid var(--line-1); background: var(--bg-0); color: var(--text-3); }
-  .search :global(svg) { width: 14px; height: 14px; flex-shrink: 0; }
-  .search input { flex: 1; min-width: 0; border: 0; background: none; color: var(--text-0); outline: none; font-size: var(--fs-sm); }
-  .found { display: flex; justify-content: space-between; gap: 8px; padding: 6px 8px; border: 0; border-radius: var(--r-sm); background: none; color: var(--text-1); cursor: pointer; text-align: left; font-size: var(--fs-sm); }
-  .found:hover { background: var(--select-bg); color: var(--text-0); }
-  .none { padding: 4px 8px; font-size: var(--fs-xs); }
-  .collapsed .item { justify-content: center; padding: 0; }
-  .collapsed .project { justify-content: center; padding: 8px 0; }
-  .collapsed .brand { justify-content: center; padding: 4px 0 10px; }
+  .collapsed .new, .collapsed .link { justify-content: center; padding: 0; }
+  .collapsed .brand { justify-content: center; padding: 4px 0; }
 </style>

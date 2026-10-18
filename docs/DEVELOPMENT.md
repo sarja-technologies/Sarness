@@ -74,3 +74,19 @@ Bump versions in `engine/pyproject.toml`, `engine/sarness_engine/__init__.py`,
 `desktop/package.json`, `desktop/src-tauri/Cargo.toml` and
 `desktop/src-tauri/tauri.conf.json`. Increase `API_VERSION`'s major version only
 for breaking API changes (the desktop refuses mismatched majors).
+
+## Which Sarness am I running?
+
+Settings → About shows `Build <git sha>[+local] · <build time>`. If it does not match your checkout you are
+running another copy. Copies that can exist side by side:
+
+| Copy | Path | Notes |
+|---|---|---|
+| Installed package (`.deb`) | `/usr/bin/sarness`, launcher `/usr/share/applications/Sarness.desktop` | Whatever version was last installed with `apt`/`dpkg`. |
+| Repo build | `desktop/src-tauri/target/release/sarness` | `cd desktop && pnpm tauri build --no-bundle`. |
+| Release AppImage | `dist/Sarness_<version>_amd64.AppImage` | Only updated by `scripts/build.sh`. |
+
+To always launch the repo build without touching the installed package, put a wrapper earlier on `PATH`
+(for example `~/.local/bin/sarness` that `exec`s the repo binary) and a user-level
+`~/.local/share/applications/Sarness.desktop` whose `Exec=` points at it; user launchers override
+`/usr/share/applications`. Remove those two files to go back to the installed package.

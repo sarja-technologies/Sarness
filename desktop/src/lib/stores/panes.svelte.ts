@@ -1,11 +1,12 @@
-// Tiled workspace state: up to four independent panes, each hosting a chat,
-// code, image or video session. Panes stay mounted while hidden (minimised or
-// behind a maximised pane), so state and running jobs are never lost.
+// Optional advanced layout: up to four independent conversations side by side.
+// The default is ONE conversation. Panes stay mounted while hidden (minimised
+// or behind a maximised pane) so streams and running jobs are never lost.
+import { newSession, getSession, store as sessionStore } from './sessions.svelte';
+import { isEmpty } from './sessions';
 
-export type PaneKind = 'chat' | 'code' | 'image' | 'video';
 export interface Pane {
   id: string;
-  kind: PaneKind;
+  sessionId: string;
 }
 export type Orientation = 'cols' | 'rows';
 
@@ -14,77 +15,98 @@ interface WorkspaceState {
   minimized: string[];
   maximized: string | null;
   focus: string | null;
-  orientation: Orientation; // how two panes are split
-  colRatio: number; // left column share (0.2–0.8)
-  rowRatio: number; // top row share
+  orientation: Orientation;
+  colRatio: number;
+  rowRatio: number;
 }
 
 export const MAX_PANES = 4;
-const KEY = 'sarness.workspace.v1';
+const KEY = 'sarness.workspace.v2';
 
 let seq = 0;
-function newId() {
-  return `p${Date.now().toString(36)}${(seq++).toString(36)}`;
-}
+const newId = () => `p${Date.now().toString(36)}${(seq++).toString(36)}`;
 
-function initial(): WorkspaceState {
-  return {
-    panes: [{ id: newId(), kind: 'chat' }],
-    minimized: [],
-    maximized: null,
-    focus: null,
-    orientation: 'cols',
-    colRatio: 0.5,
-    rowRatio: 0.5,
-  };
+function fresh(): WorkspaceState {
+  const p = { id: newId(), sessionId: newSession().id };
+  return { panes: [p], minimized: [], maximized: null, focus: p.id, orientation: 'cols', colRatio: 0.5, rowRatio: 0.5 };
 }
 
 function load(): WorkspaceState {
   try {
-    const raw = localStorage.getItem(KEY);
-    if (raw) {
-      const s = JSON.parse(raw) as WorkspaceState;
-      if (Array.isArray(s.panes) && s.panes.length && s.panes.length <= MAX_PANES) {
-        const ids = new Set(s.panes.map((p) => p.id));
-        return {
-          ...initial(),
-          ...s,
-          minimized: (s.minimized ?? []).filter((i) => ids.has(i)),
-          maximized: s.maximized && ids.has(s.maximized) ? s.maximized : null,
-          focus: s.focus && ids.has(s.focus) ? s.focus : s.panes[0].id,
-        };
-      }
+    const s = JSON.parse(localStorage.getItem(KEY) ?? 'null') as WorkspaceState | null;
+    if (s && Array.isArray(s.panes) && s.panes.length && s.panes.length <= MAX_PANES) {
+      // Drop panes whose session vanished; make sure at least one pane survives.
+      const panes = s.panes.filter((p) => p && typeof p.sessionId === 'string' && getSession(p.sessionId));
+      if (!panes.length) return fresh();
+      const ids = new Set(panes.map((p) => p.id));
+      return {
+        ...s, panes,
+        orientation: s.orientation ?? 'cols', colRatio: s.colRatio ?? 0.5, rowRatio: s.rowRatio ?? 0.5,
+        minimized: (s.minimized ?? []).filter((i) => ids.has(i)),
+        maximized: s.maximized && ids.has(s.maximized) ? s.maximized : null,
+        focus: s.focus && ids.has(s.focus) ? s.focus : panes[0].id,
+      };
     }
   } catch {
-    /* ignore corrupt state */
+    /* corrupt state: start fresh */
   }
-  const s = initial();
-  s.focus = s.panes[0].id;
-  return s;
+  return fresh();
 }
 
 export const ws = $state<WorkspaceState>(load());
 
 let timer: ReturnType<typeof setTimeout> | null = null;
+function save() {
+  try {
+    localStorage.setItem(KEY, JSON.stringify($state.snapshot(ws)));
+  } catch {
+    /* storage unavailable */
+  }
+}
 export function persistWorkspace() {
   if (timer) clearTimeout(timer);
-  timer = setTimeout(() => {
-    try {
-      localStorage.setItem(KEY, JSON.stringify($state.snapshot(ws)));
-    } catch {
-      /* storage unavailable */
-    }
-  }, 120);
+  timer = setTimeout(save, 120);
 }
+
+// Save on any change (including the very first launch, which previously saved nothing until an action).
+$effect.root(() => {
+  $effect(() => {
+    JSON.stringify($state.snapshot(ws));
+    persistWorkspace();
+  });
+});
+
+// Blank minimised panes (left by an older layout change) are clutter: close them at startup.
+{
+  const blankMin = ws.panes.filter((p) => ws.minimized.includes(p.id) && (!getSession(p.sessionId) || isEmpty(getSession(p.sessionId)!)));
+  if (blankMin.length && blankMin.length < ws.panes.length) {
+    const drop = new Set(blankMin.map((p) => p.id));
+    ws.panes = ws.panes.filter((p) => !drop.has(p.id));
+    ws.minimized = ws.minimized.filter((i) => !drop.has(i));
+    if (!ws.panes.some((p) => p.id === ws.focus)) ws.focus = ws.panes[0].id;
+  }
+}
+
+// Blank conversations that no pane shows are noise in the history: drop them at startup.
+{
+  const shown = new Set(ws.panes.map((p) => p.sessionId));
+  sessionStore.list = sessionStore.list.filter((s) => shown.has(s.id) || !isEmpty(s));
+}
+
+export const isMulti = () => visiblePanes().length > 1;
 
 export function visiblePanes(): Pane[] {
   if (ws.maximized) return ws.panes.filter((p) => p.id === ws.maximized);
   return ws.panes.filter((p) => !ws.minimized.includes(p.id));
 }
 
-export function addPane(kind: PaneKind): string | null {
+export function focusedPane(): Pane {
+  return ws.panes.find((p) => p.id === ws.focus) ?? ws.panes[0];
+}
+
+export function addPane(): string | null {
   if (ws.panes.length >= MAX_PANES) return null;
-  const p = { id: newId(), kind };
+  const p = { id: newId(), sessionId: newSession().id };
   ws.panes.push(p);
   ws.maximized = null;
   ws.focus = p.id;
@@ -98,16 +120,7 @@ export function closePane(id: string) {
   ws.minimized = ws.minimized.filter((i) => i !== id);
   if (ws.maximized === id) ws.maximized = null;
   if (ws.focus === id) ws.focus = ws.panes[0]?.id ?? null;
-  clearPaneStorage(id);
   persistWorkspace();
-}
-
-export function setKind(id: string, kind: PaneKind) {
-  const p = ws.panes.find((x) => x.id === id);
-  if (p) {
-    p.kind = kind;
-    persistWorkspace();
-  }
 }
 
 export function toggleMinimize(id: string) {
@@ -142,83 +155,57 @@ export function swapPanes(a: string, b: string) {
   persistWorkspace();
 }
 
-export function movePane(id: string, dir: -1 | 1) {
-  const i = ws.panes.findIndex((p) => p.id === id);
-  const j = i + dir;
-  if (i < 0 || j < 0 || j >= ws.panes.length) return;
-  swapPanes(ws.panes[i].id, ws.panes[j].id);
-}
-
-/** Quick layout presets: open/close panes so that `n` panes are visible. */
+/**
+ * Layout presets. Extra panes that hold a conversation are minimised (never destroyed);
+ * extra panes that are still blank are simply closed so the default view stays clean.
+ */
 export function setLayout(n: 1 | 2 | 3 | 4, orientation: Orientation = ws.orientation) {
   ws.maximized = null;
   ws.orientation = orientation;
-  const kinds: PaneKind[] = ['chat', 'code', 'image', 'video'];
   ws.minimized = [];
-  while (ws.panes.length < n) {
-    const used = new Set(ws.panes.map((p) => p.kind));
-    const kind = kinds.find((k) => !used.has(k)) ?? 'chat';
-    ws.panes.push({ id: newId(), kind });
-  }
-  // Extra panes beyond `n` are minimised rather than destroyed.
+  while (ws.panes.length < n) ws.panes.push({ id: newId(), sessionId: newSession().id });
+  const extras = ws.panes.slice(n);
+  const blank = new Set(extras.filter((p) => {
+    const s = getSession(p.sessionId);
+    return !s || isEmpty(s);
+  }).map((p) => p.id));
+  ws.panes = ws.panes.filter((p) => !blank.has(p.id));
   ws.minimized = ws.panes.slice(n).map((p) => p.id);
+  if (!ws.panes.some((p) => p.id === ws.focus)) ws.focus = ws.panes[0].id;
   persistWorkspace();
 }
 
-export function resetRatios() {
-  ws.colRatio = 0.5;
-  ws.rowRatio = 0.5;
-  persistWorkspace();
-}
-
-/** Per-pane persisted key helper. */
-export const paneKey = (paneId: string, name: string) => `pane.${paneId}.${name}`;
-
-function clearPaneStorage(id: string) {
-  try {
-    const prefix = `sarness.pane.${id}.`;
-    for (let i = localStorage.length - 1; i >= 0; i--) {
-      const k = localStorage.key(i);
-      if (k?.startsWith(prefix)) localStorage.removeItem(k);
-    }
-  } catch {
-    /* ignore */
+/** Open an existing conversation in the focused pane (or a new one when it is already open elsewhere). */
+export function openSession(sessionId: string) {
+  const open = ws.panes.find((p) => p.sessionId === sessionId);
+  if (open) {
+    ws.minimized = ws.minimized.filter((i) => i !== open.id);
+    ws.focus = open.id;
+    if (ws.maximized) ws.maximized = open.id;
+  } else {
+    focusedPane().sessionId = sessionId;
   }
+  persistWorkspace();
 }
 
-/** Panes that currently have outstanding work, for status chips. */
-export function paneById(id: string) {
-  return ws.panes.find((p) => p.id === id);
+/** Start a fresh conversation in the focused pane; the previous one stays in history. */
+export function startNewConversation(): string {
+  const cur = getSession(focusedPane().sessionId);
+  if (cur && isEmpty(cur)) return cur.id; // already a blank conversation
+  const s = newSession();
+  focusedPane().sessionId = s.id;
+  persistWorkspace();
+  return s.id;
 }
 
-/** Bring a session of `kind` into view: focus an existing one or open a pane. */
-export function openPane(kind: PaneKind): string {
-  const existing = ws.panes.find((p) => p.kind === kind);
-  if (existing) {
-    ws.minimized = ws.minimized.filter((i) => i !== existing.id);
-    if (ws.maximized && ws.maximized !== existing.id) ws.maximized = existing.id;
-    ws.focus = existing.id;
+export function paneIndexOf(id: string) {
+  return ws.panes.findIndex((p) => p.id === id);
+}
+
+export function setPaneSession(paneId: string, sessionId: string) {
+  const p = ws.panes.find((x) => x.id === paneId);
+  if (p) {
+    p.sessionId = sessionId;
     persistWorkspace();
-    return existing.id;
   }
-  const id = addPane(kind);
-  if (id) return id;
-  const target = ws.focus ?? ws.panes[0].id;
-  setKind(target, kind);
-  return target;
-}
-
-/** Request that a chat/code pane open a stored conversation. */
-export const convRequest = $state({ paneId: null as string | null, convId: null as string | null, n: 0 });
-
-export function openConversation(convId: string, preferred: PaneKind = 'chat') {
-  let target = ws.panes.find((p) => p.id === ws.focus && (p.kind === 'chat' || p.kind === 'code'));
-  target ??= ws.panes.find((p) => p.kind === preferred) ?? ws.panes.find((p) => p.kind === 'chat' || p.kind === 'code');
-  const id = target?.id ?? openPane(preferred);
-  if (ws.minimized.includes(id)) ws.minimized = ws.minimized.filter((i) => i !== id);
-  ws.focus = id;
-  persistWorkspace();
-  convRequest.paneId = id;
-  convRequest.convId = convId;
-  convRequest.n++;
 }

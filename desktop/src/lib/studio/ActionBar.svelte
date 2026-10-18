@@ -14,8 +14,9 @@
     onrerun: (exact: boolean) => void;
     onvary?: (strength: number) => void;
     onedit: () => void;
+    hidePrompt?: boolean;
   }
-  let { g, onrerun, onvary, onedit }: Props = $props();
+  let { g, onrerun, onvary, onedit, hidePrompt = false }: Props = $props();
   let menu = $state({ open: false, x: 0, y: 0, items: [] as MenuItem[] });
 
   function more(e: MouseEvent) {
@@ -37,7 +38,7 @@
 
 <div class="bar">
   <div class="info">
-    <p class="prompt selectable" title={g.prompt ?? ''}>{g.prompt || 'Untitled'}</p>
+    {#if !hidePrompt}<p class="prompt selectable" title={g.prompt ?? ''}>{g.prompt || 'Untitled'}</p>{/if}
     <div class="meta">
       <span>{model}</span>
       <span>{g.width}×{g.height}</span>
@@ -67,7 +68,7 @@
 <Menu bind:open={menu.open} bind:x={menu.x} bind:y={menu.y} bind:items={menu.items} />
 
 <style>
-  .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; padding: 10px 16px 0; min-height: 52px; }
+  .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; padding: 8px 0 0; min-height: 40px; }
   .info { flex: 1 1 240px; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
   .prompt { color: var(--text-0); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .meta { display: flex; flex-wrap: wrap; gap: 4px 12px; color: var(--text-3); font-size: var(--fs-xs); }

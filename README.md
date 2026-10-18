@@ -44,22 +44,35 @@ Real-ESRGAN, SDXL fp16-fix VAE).
 
 ## Using Sarness
 
-| Section | What you do there |
-|---|---|
-| **Workspace** | One tiled window with up to four independent sessions (Chat, Code, Image, Video) in 1/2/3/2×2 layouts. Resize by dragging dividers (or arrow keys on a focused divider), drag a pane grip to swap, minimise/maximise/close. Layout and each session persist across restarts; generation jobs keep running server-side while you work elsewhere. |
-| **Server** | Live server dashboard (GPU/VRAM/RAM/CPU/storage/runtimes), the job queue with cancel/retry, recent work and conversations. |
-| **Code session** | Chat with a coding system prompt plus a side panel: highlighted code blocks, copy/export, diff against the previous version of a file, and a folder picker to attach selected text files. It cannot execute code or touch your disk. |
-| **Image session** | Prompt → Generate. Aspect ratio, size and quality presets; reference image (img2img) with strength; paint a mask to inpaint. Result viewer with ←/→ history, Edit prompt, Regenerate, Vary subtle/strong, rerun exactly, favourite, save, export, open in folder. *Advanced settings* expose seed, steps, CFG, scheduler, LoRAs, VAE, upscaling, memory mode, format, CLIP skip — only those the model supports. |
-| **Video session** | Text→video, image→video (only for models that support it), resolution presets from the model, length/fps, time estimates measured on your server, flow shift, memory mode. |
-| **Advanced** (upper-right in Image/Video sessions) | The node editor showing the *actual* graph simple mode runs. Typed sockets, validation, palette (Space / double-click), undo/redo, copy/paste/duplicate, groups, reroutes (double-click an edge), live node progress, previews and per-node errors, cached nodes, save/presets, import/export `*.sarness.json`. |
-| **Chat** | Streaming chat with GGUF models through llama.cpp or any OpenAI-compatible endpoint. Markdown, code highlighting + copy, regenerate/edit with branch navigation, stop, attachments (images for vision models, text files), system prompt, sampling and context settings, thinking toggle, token statistics, search, pin, rename, projects, JSON/Markdown export and import. |
-| **Library** | Every image and video with full metadata. Filter by type, project/folder, collection, tag, model, date, favourites; search prompts; multi-select bulk actions; detail panel with settings, tags, rerun, export; trash with restore. Drag a thumbnail onto a reference-image slot. |
-| **Models** | Installed models, curated catalog with honest VRAM figures and hardware presets, Hugging Face search/inspect/install (GGUF quant picker, Diffusers fp16 detection, support verdict), resumable downloads, llama.cpp runtime install/update. |
-| **Settings** | Server profiles (direct / SSH tunnel), discovery, guided install, engine resource policies, Hugging Face token, remote chat endpoints, extra model folders, cache. |
+Sarness opens to **one conversation** with **one prompt box**, like a chat app. Pick **Chat, Code, Image or
+Video** from the mode selector inside the prompt box; the model list and settings change to match, and
+everything you make appears in the same timeline.
 
-Keyboard: `Alt+1…5` sections · `Ctrl+1…4` focus session · `Ctrl+Shift+M` maximise/restore · `Ctrl+B` sidebar · `Ctrl+Enter` generate/send ·
-`←/→` browse results · editor: `Space` add node, `Ctrl+Z/Y`, `Ctrl+C/V/D`,
-`Ctrl+G` group, `Ctrl+S` save, `Del` delete.
+| Mode | What the prompt box offers | What appears in the conversation |
+|---|---|---|
+| **Chat** | Chat models from your server (local GGUF or remote endpoints), temperature/top-p/top-k/min-p/repeat/max-tokens, thinking, context and GPU layers, text and (for vision models) image attachments, Stop. | Streaming Markdown replies with copy, regenerate, edit and branch navigation. |
+| **Code** | Same models with a coding prompt, attach source files, a folder picker that uploads only what you tick. | Syntax-highlighted code with copy; a side panel with the code blocks, export, and a diff against the previous version of a file. It cannot run code or read your disk. |
+| **Image** | Image models, aspect ratio, size, quality, seed, steps, guidance, scheduler, LoRAs, VAE, upscale, batch, memory mode, format; attach a reference image to edit it (strength, mask painting for inpaint). Only options the selected model supports are shown. | A progress card with live preview and **Cancel**, then the image with Edit prompt, Regenerate, Vary subtle/strong, same-seed rerun, favourite, save, export, open in folder. |
+| **Video** | Video models, text→video or image→video (when the model supports it), resolution, length, frame rate, seed, steps, guidance, flow shift, an estimate measured from your server's own earlier runs. | A progress card with **Cancel**, then a playable video with the same actions. |
+
+The chat model is told (as text) which images/videos were generated earlier in the conversation, so you
+can refer to them; it cannot see the pixels. Both **Image** and **Video** have an optional **Open node
+editor** (advanced) in their settings.
+
+**Sidebar:** New conversation, search, projects, conversation history; plus Library (every image and
+video with metadata, filters, trash), Models (installed, catalog, Hugging Face install), Server
+(GPU/VRAM/RAM, the job queue with cancel/retry) and Settings. There are no separate Chat/Code/Image/Video
+pages.
+
+**Optional multi-conversation layout:** the layout button (top right) offers one, two (side by side or
+stacked), three, or four (2×2) independent conversations, each with the same prompt box. Drag dividers to
+resize, drag a header grip to swap, minimise/maximise/close. Default is one conversation. Layout and every
+conversation (mode, draft, settings, generations) persist across restarts; jobs keep running on the server
+while you work elsewhere.
+
+Keyboard: `Ctrl+1…4` choose Chat/Code/Image/Video (←/→ also move between modes) · `Enter` send ·
+`Shift+Enter` new line · `Esc` close settings · `Ctrl+Shift+O` new conversation · `Alt+1…5` sections ·
+`Ctrl+Shift+1…4` focus a pane · `Ctrl+Shift+M` maximise/restore a pane · `Ctrl+B` sidebar.
 
 ## Where things are stored
 

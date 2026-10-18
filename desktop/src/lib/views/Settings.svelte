@@ -274,7 +274,8 @@
       <div class="group">
         <p><strong>Sarness</strong> (Sarja Harness) — self-hosted AI workstation.</p>
         <p class="muted small">Desktop {app?.version ?? '0.1.0'} · Engine {conn.system?.engine.version ?? '—'} · API {conn.system?.engine.api_version ?? '—'}</p>
-        <p class="muted small">Keyboard: Alt+1…5 switch sections · Ctrl+1…4 focus session · Ctrl+Shift+M maximise or restore the focused session · Ctrl+B sidebar · Ctrl+Enter generate · ←/→ browse results · in the workflow editor: Space add node, Ctrl+Z/Y undo/redo, Ctrl+C/V/D copy/paste/duplicate, Ctrl+G group, double-click an edge to add a reroute.</p>
+        <p class="muted small" data-testid="build-stamp">Build {__SARNESS_BUILD__}</p>
+        <p class="muted small">Keyboard: Ctrl+1…4 choose Chat/Code/Image/Video in the composer (←/→ also move between modes) · Enter send · Shift+Enter new line · Esc close settings · Ctrl+Shift+O new conversation · Alt+1…5 switch sections · Ctrl+Shift+1…4 focus a pane · Ctrl+Shift+M maximise or restore a pane · Ctrl+B sidebar · in the node editor: Space add node, Ctrl+Z/Y undo/redo, Ctrl+C/V/D copy/paste/duplicate, Ctrl+G group, double-click an edge to add a reroute.</p>
         {#if app}<p class="faint small mono">Config: {app.config_dir}</p>{/if}
       </div>
     {/if}

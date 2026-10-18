@@ -9,7 +9,8 @@
   import Workspace from './lib/views/Workspace.svelte';
   import Tiler from './lib/workspace/Tiler.svelte';
   import { applyTheme } from './lib/stores/theme';
-  import { focusPane, toggleMaximize, ws } from './lib/stores/panes.svelte';
+  import { focusPane, startNewConversation, toggleMaximize, ws } from './lib/stores/panes.svelte';
+  import { syncServerConversations } from './lib/stores/sessions.svelte';
   import Library from './lib/views/Library.svelte';
   import Models from './lib/views/Models.svelte';
   import Settings from './lib/views/Settings.svelte';
@@ -32,7 +33,7 @@
     const key = `${conn.state}:${conn.activeId}`;
     if (conn.state === 'online' && loadedFor !== key) {
       loadedFor = key;
-      Promise.allSettled([loadJobs(), loadModels(), loadProjects()]);
+      Promise.allSettled([loadJobs(), loadModels(), loadProjects(), syncServerConversations()]);
     }
   });
 
@@ -53,8 +54,10 @@
       return;
     }
     if (!(e.ctrlKey || e.metaKey)) return;
-    if (n >= 1 && n <= 4 && !e.shiftKey && !e.altKey) {
-      const p = ws.panes[n - 1];
+    const k = e.key.toLowerCase();
+    // Ctrl+1..4 pick the composer mode (handled by the focused conversation); Ctrl+Shift+1..4 focus a pane.
+    if (e.shiftKey && !e.altKey && ['!', '@', '#', '$'].includes(e.key)) {
+      const p = ws.panes[['!', '@', '#', '$'].indexOf(e.key)];
       if (p) {
         prefs.view = 'workspace';
         ws.minimized = ws.minimized.filter((i) => i !== p.id);
@@ -62,10 +65,15 @@
         focusPane(p.id);
         e.preventDefault();
       }
-    } else if (e.key.toLowerCase() === 'm' && e.shiftKey && ws.focus) {
+    } else if (k === 'm' && e.shiftKey && ws.focus) {
       toggleMaximize(ws.focus);
       e.preventDefault();
-    } else if (e.key.toLowerCase() === 'b' && !e.shiftKey) {
+    } else if (k === 'o' && e.shiftKey) {
+      startNewConversation();
+      prefs.view = 'workspace';
+      persistPrefs();
+      e.preventDefault();
+    } else if (k === 'b' && !e.shiftKey) {
       prefs.sidebarCollapsed = !prefs.sidebarCollapsed;
       persistPrefs();
       e.preventDefault();

@@ -8,7 +8,8 @@
   import { cancelJob, jobs, onGeneration, recentJobs, retryJob } from '../stores/jobs.svelte';
   import { models } from '../stores/models.svelte';
   import { prefs, persistPrefs, type View } from '../stores/prefs.svelte';
-  import { openConversation, openPane, type PaneKind } from '../stores/panes.svelte';
+  import { openSession, startNewConversation } from '../stores/panes.svelte';
+  import { store as sessionStore } from '../stores/sessions.svelte';
   import { createProject, projects, selectProject } from '../stores/projects.svelte';
   import Badge from '../ui/Badge.svelte';
   import Button from '../ui/Button.svelte';
@@ -46,8 +47,8 @@
     persistPrefs();
   }
 
-  function open(kind: PaneKind) {
-    openPane(kind);
+  function open(mode: string) {
+    startNewConversation();
     go('workspace');
   }
 
@@ -156,7 +157,7 @@
         <div class="sh" style="margin-top:22px"><h2>Conversations</h2><Button size="sm" variant="ghost" onclick={() => open('chat')}>Open chat</Button></div>
         <div class="convs">
           {#each convs as c (c.id)}
-            <button class="conv" onclick={() => { openConversation(c.id); go('workspace'); }}><MessagesSquare /><span class="truncate">{c.title}</span><span class="faint">{ago(c.updated_at)}</span></button>
+            <button class="conv" onclick={() => { const s = sessionStore.list.find((x) => x.convId === c.id); if (s) { openSession(s.id); go('workspace'); } }}><MessagesSquare /><span class="truncate">{c.title}</span><span class="faint">{ago(c.updated_at)}</span></button>
           {/each}
           {#if !convs.length}<p class="faint small">No conversations yet.</p>{/if}
         </div>
