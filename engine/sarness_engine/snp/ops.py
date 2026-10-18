@@ -304,6 +304,23 @@ async def _abort_gen(gen: Any) -> None:
         log.exception("generator cleanup failed")
 
 
+async def _send_event(ctx: Any, ev: dict[str, Any]) -> None:
+    """Sends one event as MSG. The terminal ``done`` event carries the whole reply; when that does not
+    fit the flow-control window it is sent without the text (``truncated: true``) and the client
+    reads the persisted message instead. A MSG can never exceed the window (spec 6.2)."""
+    try:
+        await ctx.send_msg(plain(ev))
+    except OpError as exc:
+        msg = ev.get("message")
+        if exc.code != "too_large" or ev.get("type") != "done" or not isinstance(msg, dict):
+            raise
+        small = {**msg, "truncated": True}
+        for k in ("content", "reasoning"):
+            if isinstance(small.get(k), str):
+                small[k] = ""
+        await ctx.send_msg(plain({**ev, "message": small}))
+
+
 async def _pump(ctx: Any, gen: Any, first_error: Callable[[Exception], OpError], mid_error: Callable[[Exception], str],
                 on_event: Callable[[dict[str, Any]], None] | None = None) -> None:
     """Moves events from an engine async generator to MSG frames.
@@ -324,7 +341,7 @@ async def _pump(ctx: Any, gen: Any, first_error: Callable[[Exception], OpError],
         while True:
             if on_event:
                 on_event(ev)
-            await ctx.send_msg(plain(ev))
+            await _send_event(ctx, ev)
             try:
                 ev = await gen.__anext__()
             except StopAsyncIteration:
