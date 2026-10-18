@@ -28,6 +28,7 @@
     streaming: boolean;
     settingsOpen: boolean;
     settings: Snippet;
+    agentbar?: Snippet;
     onmode: (m: Mode) => void;
     onsend: () => void;
     onstop: () => void;
@@ -36,7 +37,7 @@
   }
   let {
     mode, text = $bindable(), el = $bindable(null), placeholder, modelOptions, model, onmodel, chips, attachments, accept, attachHint,
-    uploading = false, streaming, settingsOpen = $bindable(), settings, onmode, onsend, onstop, onattach, onremove,
+    uploading = false, streaming, settingsOpen = $bindable(), settings, agentbar, onmode, onsend, onstop, onattach, onremove,
   }: Props = $props();
 
   const icons = { chat: MessagesSquare, code: Code2, image: ImageIcon, video: Clapperboard } as const;
@@ -101,6 +102,8 @@
         {/each}
       </div>
     {/if}
+
+    {#if agentbar}{@render agentbar()}{/if}
 
     <TextArea bind:el bind:value={text} minRows={1} maxRows={10} {placeholder}
       onkeydown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); onsend(); } }} onpaste={paste} />

@@ -15,6 +15,8 @@
   import Menu, { type MenuItem } from '../ui/Menu.svelte';
   import { tooltip } from '../ui/tooltip';
   import { deleteSession, renameSession } from '../workspace/sessionActions';
+  import { agentStore } from '../agent/state.svelte';
+  import { workspaceTitle } from '../agent/prompt';
   import { MODE_LABEL } from '../workspace/params';
 
   const collapsed = $derived(prefs.sidebarCollapsed);
@@ -134,6 +136,7 @@
         {#each g.items as s (s.id)}
           <button class="item" class:active={s.id === activeId} onclick={() => open(s)} oncontextmenu={(e) => context(e, s)} title={s.title}>
             <span class="t truncate">{s.title}</span>
+            {#if agentStore.sessions[s.id]?.project}<span class="proj truncate">{workspaceTitle(agentStore.sessions[s.id].project!)}</span>{/if}
             {#if busy(s)}<span class="run" title="Generating"></span>{:else}<span class="m">{MODE_LABEL[s.mode]}</span>{/if}
           </button>
         {/each}
@@ -197,6 +200,7 @@
   .item:hover { background: rgba(var(--fg-rgb), 0.05); color: var(--text-0); }
   .item.active { background: var(--select-bg); color: var(--text-0); }
   .t { flex: 1; min-width: 0; }
+  .proj { flex: 0 1 70px; font-size: var(--fs-xs); color: var(--text-3); padding: 1px 6px; border-radius: var(--r-full); background: var(--bg-2); }
   .m { font-size: 10.5px; color: var(--text-3); }
   .run { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: pulse-ring 1.8s infinite; flex-shrink: 0; }
   .none { padding: 12px 10px; font-size: var(--fs-sm); }

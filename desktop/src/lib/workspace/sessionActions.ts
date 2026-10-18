@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { api } from '../api/client';
 import { isTauri } from '../api/transport';
+import { dropAgent } from '../agent/state.svelte';
 import { removeSession } from '../stores/sessions.svelte';
 import type { Session } from '../stores/sessions';
 import { toast, toastError } from '../stores/toast.svelte';
@@ -21,13 +22,15 @@ export async function deleteSession(s: Session): Promise<boolean> {
   const body = s.convId
     ? 'The chat messages are permanently deleted from the server. Generated images and videos stay in your Library.'
     : 'This conversation is removed from your history. Generated images and videos stay in your Library.';
-  if (!(await confirmDialog(`Delete “${s.title}”?`, body, { danger: true, confirmLabel: 'Delete' }))) return false;
+  const note = ' Coding task history is removed from Sarness; files in your project folders are never touched.';
+  if (!(await confirmDialog(`Delete “${s.title}”?`, body + (s.hasAgent ? note : ''), { danger: true, confirmLabel: 'Delete' }))) return false;
   try {
     if (s.convId) await api.del(`/v1/chat/conversations/${s.convId}`);
   } catch (e) {
     toastError(e, 'Could not delete the conversation');
     return false;
   }
+  dropAgent(s.id);
   removeSession(s.id);
   return true;
 }

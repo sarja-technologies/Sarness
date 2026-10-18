@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sarness-engine"
-version = "0.1.1"
+version = "0.2.0"
 description = "Sarness Engine — self-hosted inference, workflow and job server for the Sarness desktop workstation"
 requires-python = ">=3.11"
 license = { text = "Proprietary" }

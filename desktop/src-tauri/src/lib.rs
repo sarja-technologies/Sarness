@@ -1,6 +1,7 @@
 //! Sarness desktop core: connection management, loopback proxy, SSH tunnels,
 //! discovery, guided engine installation and local media export.
 
+mod agent;
 mod config;
 mod discovery;
 mod proxy;
@@ -432,15 +433,28 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(core)
+        .manage(agent::commands::AgentState::new(config::config_dir().join("projects.json")))
         .on_page_load(|webview, payload| {
             log::info!("page {:?}: {}", payload.event(), webview.url().map(|u| u.to_string()).unwrap_or_default());
         })
         .invoke_handler(tauri::generate_handler![
             list_profiles, save_profile, delete_profile, test_connection, connect, disconnect, proxy_info,
             discover_servers, install_engine, export_file, save_to_library_folder, write_text_file,
-            read_text_file, cache_info, clear_cache, app_info, frontend_log
+            read_text_file, cache_info, clear_cache, app_info, frontend_log,
+            agent::commands::agent_tool_defs, agent::commands::agent_call, agent::commands::agent_cancel,
+            agent::commands::agent_end_run, agent::commands::agent_reset_run, agent::commands::projects_list,
+            agent::commands::projects_add, agent::commands::projects_remove, agent::commands::project_create,
+            agent::commands::project_tree, agent::commands::project_git, agent::commands::project_diff,
+            agent::commands::project_snapshot
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Sarness");
+        .build(tauri::generate_context!())
+        .expect("error while building Sarness")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                // Never leave dev servers or other agent children running after the app closes.
+                let engine = app.state::<agent::commands::AgentState>().engine.clone();
+                tauri::async_runtime::block_on(engine.shutdown());
+            }
+        });
     drop(rt);
 }

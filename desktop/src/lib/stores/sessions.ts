@@ -21,6 +21,7 @@ export interface Session {
   convId: string | null;
   mode: Mode;
   entries: GenEntry[];
+  hasAgent: boolean; // a project was chosen or a coding task ran (state lives in the agent store)
   draft: string;
   image: ImageSettings;
   video: VideoSettings;
@@ -37,7 +38,7 @@ export const newId = (p: string) => `${p}${Date.now().toString(36)}${(seq++).toS
 
 export function createSessionObject(now = Date.now() / 1000): Session {
   return {
-    id: newId('s'), title: DEFAULT_TITLE, titled: false, convId: null, mode: 'chat', entries: [], draft: '',
+    id: newId('s'), title: DEFAULT_TITLE, titled: false, convId: null, mode: 'chat', entries: [], hasAgent: false, draft: '',
     image: imageDefaults(), video: videoDefaults(), chatModel: null, chatSystem: '', graphs: { image: null, video: null }, created: now, updated: now,
   };
 }
@@ -62,7 +63,7 @@ export function hydrate(raw: unknown): Session[] {
   return out;
 }
 
-export const isEmpty = (s: Session) => !s.convId && !s.entries.length && !s.draft.trim();
+export const isEmpty = (s: Session) => !s.convId && !s.entries.length && !s.hasAgent && !s.draft.trim();
 
 export function titleFromPrompt(text: string): string {
   const t = text.replace(/\s+/g, ' ').trim();
@@ -83,16 +84,19 @@ export function missingFromServer(sessions: Session[], convs: Conversation[]): S
 
 export type TimelineItem =
   | { kind: 'message'; key: string; at: number; id: string }
-  | { kind: 'gen'; key: string; at: number; entry: GenEntry };
+  | { kind: 'gen'; key: string; at: number; entry: GenEntry }
+  | { kind: 'run'; key: string; at: number; id: string };
 
-/** One chronological timeline from the active chat path and generation entries. */
-export function buildTimeline(messages: { id: string; created_at: number }[], entries: GenEntry[]): TimelineItem[] {
-  const items: TimelineItem[] = [
+/** One chronological timeline from the active chat path, generation entries and coding-agent runs. */
+export function buildTimeline(messages: { id: string; created_at: number }[], entries: GenEntry[], runs: { id: string; created: number }[] = []): TimelineItem[] {
+  const items: (TimelineItem & { i: number })[] = [
     ...messages.map((m, i) => ({ kind: 'message' as const, key: `m${m.id}`, at: m.created_at, id: m.id, i })),
     ...entries.map((e, i) => ({ kind: 'gen' as const, key: `g${e.id}`, at: e.created, entry: e, i })),
+    ...runs.map((r, i) => ({ kind: 'run' as const, key: `r${r.id}`, at: r.created, id: r.id, i })),
   ];
+  const rank = { message: 0, gen: 1, run: 2 } as const;
   // Stable chronological order; chat path order breaks ties so a user turn stays before its reply.
-  return items.sort((a, b) => a.at - b.at || (a.kind === b.kind ? (a as any).i - (b as any).i : a.kind === 'message' ? -1 : 1)).map(({ i: _i, ...rest }: any) => rest);
+  return items.sort((a, b) => a.at - b.at || (a.kind === b.kind ? a.i - b.i : rank[a.kind] - rank[b.kind])).map(({ i: _i, ...rest }) => rest as TimelineItem);
 }
 
 export function groupByRecency<T extends { updated: number }>(items: T[], now = Date.now() / 1000): { label: string; items: T[] }[] {

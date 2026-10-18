@@ -106,3 +106,38 @@ def export(cid: str, format: str = "json", st: AppState = Depends(require_auth))
 @router.post("/import")
 def import_conversation(body: dict[str, Any] = Body(...), st: AppState = Depends(require_auth)):
     return st.chat.import_(body)
+
+
+agent_router = APIRouter(prefix="/v1/agent")
+
+
+@agent_router.get("/models")
+def agent_models(st: AppState = Depends(require_auth)):
+    return st.chat.agent_models()
+
+
+@agent_router.post("/completions")
+async def agent_completions(body: dict[str, Any] = Body(...), st: AppState = Depends(require_auth)):
+    """Stateless streaming completion with native tool calls (OpenAI-style).
+
+    The engine only runs inference. The calling desktop owns the transcript and executes tools."""
+    gen = st.chat.agent_completion(body)
+    try:
+        first = await gen.__anext__()
+    except ChatError as exc:
+        raise HTTPException(exc.status, str(exc))
+    except StopAsyncIteration:
+        raise HTTPException(500, "no response")
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"model server error: {exc}")
+
+    async def stream():
+        yield _sse(first)
+        try:
+            async for ev in gen:
+                yield _sse(ev)
+        except Exception as exc:  # noqa: BLE001
+            yield _sse({"type": "error", "message": str(exc)})
+
+    return StreamingResponse(stream(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

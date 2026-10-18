@@ -360,6 +360,116 @@ class ChatService:
         final = self.db.one("SELECT * FROM messages WHERE id = ?", [assistant["id"]])
         yield {"type": "done", "message": self._msg_public(final)}
 
+    # ------------------------------------------------------------- agent
+    AGENT_ROLES = ("system", "user", "assistant", "tool")
+    AGENT_MAX_TOOLS = 64
+
+    def agent_models(self) -> list[dict[str, Any]]:
+        """Chat models annotated with whether tool calling is expected to work."""
+        out = []
+        for m in self.available_models():
+            out.append({**m, "tools": True if not m["local"] else None})
+        return out
+
+    def _agent_validate(self, req: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        msgs = req.get("messages")
+        if not isinstance(msgs, list) or not msgs:
+            raise ChatError("messages must be a non-empty list")
+        for m in msgs:
+            if not isinstance(m, dict) or m.get("role") not in self.AGENT_ROLES:
+                raise ChatError("every message needs a valid role")
+            if m["role"] == "tool" and not m.get("tool_call_id"):
+                raise ChatError("tool messages need a tool_call_id")
+        tools = req.get("tools") or []
+        if not isinstance(tools, list) or len(tools) > self.AGENT_MAX_TOOLS:
+            raise ChatError(f"tools must be a list of at most {self.AGENT_MAX_TOOLS} definitions")
+        for t in tools:
+            fn = (t or {}).get("function") if isinstance(t, dict) else None
+            if not isinstance(fn, dict) or t.get("type") != "function" or not fn.get("name") \
+                    or not isinstance(fn.get("parameters", {}), dict):
+                raise ChatError("each tool must be {type:'function', function:{name, parameters}}")
+        return msgs, tools
+
+    async def agent_completion(self, req: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
+        """Stateless, tool-capable chat completion. The caller owns the transcript and
+        executes every tool itself; nothing is stored and no tool runs on this host."""
+        msgs, tools = self._agent_validate(req)
+        model_ref = req.get("model_ref")
+        if not model_ref:
+            raise ChatError("choose a model first")
+        params = req.get("params") or {}
+        if model_ref.startswith("local:"):
+            model_id = model_ref.split(":", 1)[1]
+            if not self.registry.get(model_id):
+                raise ChatError(f"model {model_id} is not installed", 404)
+        elif model_ref.startswith("endpoint:"):
+            _, ep_id, ep_model = model_ref.split(":", 2)
+            ep = next((e for e in (self.settings.get("llm_endpoints") or []) if e.get("id") == ep_id), None)
+            if not ep:
+                raise ChatError("the selected remote endpoint no longer exists", 404)
+        else:
+            raise ChatError("invalid model reference")
+        body: dict[str, Any] = {"messages": msgs}
+        for k in SAMPLING_KEYS:
+            if params.get(k) is not None:
+                body[k] = params[k]
+        if tools:
+            body["tools"] = tools
+            body["tool_choice"] = req.get("tool_choice") or "auto"
+        if params.get("thinking") is not None and model_ref.startswith("local:"):
+            body["chat_template_kwargs"] = {"enable_thinking": bool(params["thinking"])}
+        local = model_ref.startswith("local:")
+        if local:
+            await self.ensure_local(model_id, params.get("ctx"), params.get("gpu_layers"))
+            self.llama.active_streams += 1
+            stream = self.llama.stream_chat({**body, "model": model_id})
+        else:
+            stream = stream_openai(ep["base_url"], ep.get("api_key"), {**body, "model": ep_model})
+        content, reasoning = [], []
+        calls: dict[int, dict[str, Any]] = {}
+        finish, usage, timings = None, None, None
+        try:
+            async for chunk in stream:
+                for choice in chunk.get("choices") or []:
+                    delta = choice.get("delta") or {}
+                    piece = delta.get("content")
+                    think = delta.get("reasoning_content") or delta.get("reasoning")
+                    if piece:
+                        content.append(piece)
+                    if think:
+                        reasoning.append(think)
+                    if piece or think:
+                        yield {"type": "delta", "content": piece or "", "reasoning": think or ""}
+                    for tc in delta.get("tool_calls") or []:
+                        i = int(tc.get("index", 0))
+                        cur = calls.setdefault(i, {"id": None, "name": "", "arguments": ""})
+                        if tc.get("id"):
+                            cur["id"] = tc["id"]
+                        fn = tc.get("function") or {}
+                        if fn.get("name"):
+                            cur["name"] = fn["name"]
+                        if fn.get("arguments"):
+                            cur["arguments"] += fn["arguments"]
+                        yield {"type": "tool_call", "index": i, "name": cur["name"]}
+                    if choice.get("finish_reason"):
+                        finish = choice["finish_reason"]
+                if chunk.get("usage"):
+                    usage = chunk["usage"]
+                if chunk.get("timings"):
+                    timings = chunk["timings"]
+        finally:
+            if local:
+                self.llama.active_streams = max(0, self.llama.active_streams - 1)
+                self.llama.last_used = time.time()
+        tool_calls = [{"id": c["id"] or f"call_{new_id('')}", "type": "function",
+                       "function": {"name": c["name"], "arguments": c["arguments"] or "{}"}}
+                      for _, c in sorted(calls.items())]
+        message: dict[str, Any] = {"role": "assistant", "content": "".join(content)}
+        if tool_calls:
+            message["tool_calls"] = tool_calls
+        yield {"type": "done", "message": message, "reasoning": "".join(reasoning),
+               "finish_reason": finish, "usage": usage, "timings": timings}
+
     def _build_messages(self, system: str, path: list[dict[str, Any]], vision: bool) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         if system.strip():

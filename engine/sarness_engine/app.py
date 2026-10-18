@@ -87,7 +87,7 @@ def create_app(cfg: EngineConfig, *, start_background: bool = True) -> FastAPI:
 
     from .api import chat, jobs, library, models, system, ws
 
-    for r in (system.router, library.router, jobs.router, models.router, chat.router, ws.router):
+    for r in (system.router, library.router, jobs.router, models.router, chat.router, chat.agent_router, ws.router):
         app.include_router(r)
     return app
 
