@@ -69,6 +69,10 @@ pub async fn serve(shared: Arc<ProxyShared>) -> std::io::Result<u16> {
         .layer(axum::extract::DefaultBodyLimit::disable())
         .with_state(shared.clone());
     tokio::spawn(async move {
+        // Responses are streamed in several small writes; without TCP_NODELAY Nagle + delayed ACK add ~40 ms to each.
+        let listener = axum::serve::ListenerExt::tap_io(listener, |tcp| {
+            let _ = tcp.set_nodelay(true);
+        });
         if let Err(e) = axum::serve(listener, app).await {
             log::error!("proxy stopped: {e}");
         }
