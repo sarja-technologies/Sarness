@@ -92,14 +92,42 @@ class Storage:
         mime = _sniff_mime(data) or declared_mime or ""
         if mime not in ALLOWED_UPLOAD_MIME:
             raise StorageError(f"unsupported upload type: {mime or 'unknown'}")
+        dest = self._upload_dest(mime)
+        fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        return self._finish_upload(dest, mime, filename)
+
+    def save_upload_file(self, src: Path, filename: str, declared_mime: str | None) -> dict[str, Any]:
+        """Like :meth:`save_upload` for data that is already on disk (streamed uploads).
+
+        ``src`` must lie on the same filesystem as the uploads directory; it is moved, never copied,
+        and removed when the upload is rejected."""
+        src = Path(src)
+        try:
+            if src.stat().st_size > MAX_UPLOAD_BYTES:
+                raise StorageError("upload too large")
+            with open(src, "rb") as f:
+                head = f.read(65536 + 16)
+            mime = _sniff_mime(head) or declared_mime or ""
+            if mime not in ALLOWED_UPLOAD_MIME:
+                raise StorageError(f"unsupported upload type: {mime or 'unknown'}")
+            dest = self._upload_dest(mime)
+            os.chmod(src, 0o600)
+            os.replace(src, dest)
+        except BaseException:
+            src.unlink(missing_ok=True)
+            raise
+        return self._finish_upload(dest, mime, filename)
+
+    def _upload_dest(self, mime: str) -> Path:
         ext = mimetypes.guess_extension(mime) or ".bin"
         if ext == ".jpe":
             ext = ".jpg"
         self.cfg.uploads_dir.mkdir(parents=True, exist_ok=True)
-        dest = self.cfg.uploads_dir / f"{new_id('u_')}{ext}"
-        fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
+        return self.cfg.uploads_dir / f"{new_id('u_')}{ext}"
+
+    def _finish_upload(self, dest: Path, mime: str, filename: str) -> dict[str, Any]:
         dims: dict[str, Any] = {}
         if mime.startswith("image/"):
             try:

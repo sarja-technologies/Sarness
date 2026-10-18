@@ -16,6 +16,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 DEFAULT_PORT = 8742
+DEFAULT_SNP_PORT = 8744
 
 
 def default_data_dir() -> Path:
@@ -36,6 +37,12 @@ class EngineConfig:
     # Extra CORS origins (the desktop normally talks through its loopback proxy).
     cors_origins: list[str] = field(default_factory=list)
     data_dir: str = ""
+    # SNP/1 native protocol (docs/SNP.md). snp_host None means "same as host".
+    snp_enabled: bool = True
+    snp_host: str | None = None
+    snp_port: int = DEFAULT_SNP_PORT
+    # Extra DNS names / IP addresses for the SNP certificate (the pin does not change with them).
+    snp_names: list[str] = field(default_factory=list)
 
     # ---- derived paths -------------------------------------------------
     @property
@@ -116,6 +123,10 @@ def load_config(data_dir: Path | None = None) -> EngineConfig:
         cfg.host = os.environ["SARNESS_HOST"]
     if os.environ.get("SARNESS_PORT"):
         cfg.port = int(os.environ["SARNESS_PORT"])
+    if os.environ.get("SARNESS_SNP_HOST"):
+        cfg.snp_host = os.environ["SARNESS_SNP_HOST"]
+    if os.environ.get("SARNESS_SNP_PORT"):
+        cfg.snp_port = int(os.environ["SARNESS_SNP_PORT"])
     return cfg
 
 

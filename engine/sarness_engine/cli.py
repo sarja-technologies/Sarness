@@ -104,6 +104,24 @@ def cmd_serve(args) -> int:
     return 0
 
 
+def cmd_snp_identity(args) -> int:
+    from .snp.identity import load_or_create
+
+    cfg = load_config(Path(args.data_dir).expanduser() if args.data_dir else None)
+    cfg.ensure_dirs()
+    host = cfg.snp_host or cfg.host
+    ident = load_or_create(cfg.root, host, [cfg.host, *cfg.snp_names])
+    info = {"pin": ident.pin, "cert": str(ident.cert_path), "listen": f"{host}:{cfg.snp_port}", "enabled": cfg.snp_enabled}
+    if args.json:
+        print(json.dumps(info))
+    else:
+        print("SNP/1 server identity (enter this pin in Sarness Desktop)")
+        print(f"  pin     : {info['pin']}")
+        print(f"  cert    : {info['cert']}")
+        print(f"  listen  : {info['listen']}{'' if cfg.snp_enabled else '  (disabled in config)'}")
+    return 0
+
+
 def cmd_install_llama(args) -> int:
     from .runtime.llama import LlamaRuntime
 
@@ -174,6 +192,10 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--rotate", action="store_true")
     s.add_argument("--json", action="store_true")
     s.set_defaults(fn=cmd_token)
+
+    s = sub.add_parser("snp-identity", help="print the SNP/1 certificate pin (never key material)")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_snp_identity)
 
     s = sub.add_parser("install-llama", help="download the llama.cpp server runtime")
     s.add_argument("--variant", choices=["cuda-12.8", "vulkan", "cpu"])

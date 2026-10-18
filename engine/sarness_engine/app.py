@@ -7,6 +7,7 @@ import logging
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -37,8 +38,12 @@ DEFAULT_CORS = ["tauri://localhost", "http://tauri.localhost", "https://tauri.lo
                 "http://localhost:1420", "http://127.0.0.1:1420"]
 
 
-def create_app(cfg: EngineConfig, *, start_background: bool = True) -> FastAPI:
+def create_app(cfg: EngineConfig, *, start_background: bool = True, start_snp: bool | None = None,
+               snp_limits: Any = None) -> FastAPI:
+    """``start_snp`` defaults to ``start_background`` so that tests which build the app without
+    background services do not bind the SNP port; ``cfg.snp_enabled`` can still switch it off."""
     cfg.ensure_dirs()
+    serve_snp = (start_background if start_snp is None else start_snp) and cfg.snp_enabled
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -54,10 +59,13 @@ def create_app(cfg: EngineConfig, *, start_background: bool = True) -> FastAPI:
             st.jobs.start()
             tasks.append(asyncio.create_task(_stats_loop(st)))
             tasks.append(asyncio.create_task(_gateway_loop(st)))
+        app.state.snp = await _start_snp(st, snp_limits) if serve_snp else None
         log.info("Sarness Engine %s ready (data: %s)", __version__, cfg.root)
         try:
             yield
         finally:
+            if app.state.snp is not None:
+                await app.state.snp.stop()
             for t in tasks:
                 t.cancel()
             await st.experiments.shutdown()
@@ -96,6 +104,21 @@ def create_app(cfg: EngineConfig, *, start_background: bool = True) -> FastAPI:
               *experiment_routers()):
         app.include_router(r)
     return app
+
+
+async def _start_snp(st: AppState, limits: Any = None):
+    """Starts the SNP/1 listener as an additional service. A failure (port in use, missing
+    dependency, unreadable identity) is logged loudly but never stops the HTTP API."""
+    try:
+        from .snp.server import SnpServer
+
+        server = SnpServer(st, limits=limits)
+        await server.start()
+        return server
+    except Exception:  # noqa: BLE001
+        log.error("SNP/1 FAILED TO START on %s:%s; the HTTP API continues without the native protocol",
+                  st.cfg.snp_host or st.cfg.host, st.cfg.snp_port, exc_info=True)
+        return None
 
 
 def _build_state(cfg: EngineConfig) -> AppState:
