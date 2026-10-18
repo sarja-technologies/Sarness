@@ -15,7 +15,7 @@ powered by your own GPU server.
 desktop/   Tauri app (src/ = Svelte UI, src-tauri/ = Rust core: proxy, tunnels, keyring, installer)
 engine/    Sarness Engine (sarness_engine/ package, tests/)
 scripts/   install-engine.sh (server), setup-dev.sh, dev.sh, test.sh, build.sh, package-engine.sh
-docs/      ARCHITECTURE.md · API.md · WORKFLOW_FORMAT.md · DEPLOYMENT.md · MODELS.md · DEVELOPMENT.md · EXPERIMENTS.md
+docs/      ARCHITECTURE.md · API.md · SNP.md · SNP-OPS.md · WORKFLOW_FORMAT.md · DEPLOYMENT.md · MODELS.md · DEVELOPMENT.md · EXPERIMENTS.md
 dist/      build output (.deb, .rpm, .AppImage, engine bundle, SHA256SUMS)
 ```
 
@@ -30,12 +30,13 @@ Pre-built Linux installers (`.deb`, `.rpm`, `.AppImage`) and the engine bundle a
 installer, or copy `dist/sarness-engine.tar.gz` + `scripts/install-engine.sh` and run
 
 ```bash
-bash install-engine.sh --source sarness-engine.tar.gz --bind tailscale --with-llama
+bash install-engine.sh --source sarness-engine.tar.gz --with-llama
 ```
 
 Note the API token it prints. **Desktop**: `sudo apt install ./Sarness_0.1.0_amd64.deb`
-(or run the AppImage), launch *Sarness*, enter the server's Tailscale IP / MagicDNS
-name / LAN IP and port `8742`, paste the token, **Test connection**, **Save & connect**.
+(or run the AppImage), launch *Sarness*, enter the server's address, choose the protocol
+(SNP on port `8744` is the native one; HTTP uses `8742`), paste the token, **Test connection**,
+**Save & connect**.
 Full guide: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 Then open **Models → Catalog** and install what the "Recommended for this
