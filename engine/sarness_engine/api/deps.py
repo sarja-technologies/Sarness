@@ -26,6 +26,8 @@ class AppState:
     chat: Any
     gateway: Any
     started_at: float
+    experiments: Any = None
+    experiment_docs: Any = None
 
 
 def state(request: Request) -> AppState:

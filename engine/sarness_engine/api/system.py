@@ -62,6 +62,7 @@ def system(st: AppState = Depends(require_auth)) -> dict[str, Any]:
                        "loaded": worker.last_status.get("loaded", []),
                        "vram_allocated_mb": worker.last_status.get("torch_vram_allocated_mb"),
                        "vram_reserved_mb": worker.last_status.get("torch_vram_reserved_mb")},
+            "experiments": [{"id": e.id, "gpu_active": e.gpu_active()} for e in (st.experiments.list() if st.experiments else [])],
         },
         "llm": llm,
         "jobs": st.jobs.counts(),

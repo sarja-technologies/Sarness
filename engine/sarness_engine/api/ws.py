@@ -7,6 +7,7 @@ import json
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from .. import API_VERSION
 from .deps import check_ws
 
 router = APIRouter(prefix="/v1")
@@ -22,7 +23,7 @@ async def events(ws: WebSocket):
     await ws.accept()
     st = ws.app.state.sarness
     q = st.bus.subscribe()
-    await ws.send_text(json.dumps({"type": "hello", "data": {"api_version": "1.0", "heartbeat_s": HEARTBEAT_S}}))
+    await ws.send_text(json.dumps({"type": "hello", "data": {"api_version": API_VERSION, "heartbeat_s": HEARTBEAT_S}}))
 
     async def reader():
         # Clients may send {"type":"ping"}; anything else is ignored.

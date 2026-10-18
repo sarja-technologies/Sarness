@@ -108,11 +108,20 @@ MIGRATIONS: list[str] = [
         created_at REAL NOT NULL, updated_at REAL NOT NULL
     );
     """,
+    # 2 — saved experiment documents (e.g. God's Paintbrush paintings)
+    """
+    CREATE TABLE experiment_documents (
+        id TEXT PRIMARY KEY, experiment_id TEXT NOT NULL, title TEXT NOT NULL,
+        data TEXT NOT NULL, thumbnail TEXT, project_id TEXT,
+        created_at REAL NOT NULL, updated_at REAL NOT NULL
+    );
+    CREATE INDEX experiment_documents_exp ON experiment_documents(experiment_id, updated_at DESC);
+    """,
 ]
 
 JSON_COLUMNS = {
     "workflow", "simple", "node_states", "error", "result", "metadata", "attachments",
-    "stats", "params", "source", "meta", "files", "graph",
+    "stats", "params", "source", "meta", "files", "graph", "data",
 }
 
 

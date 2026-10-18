@@ -64,6 +64,23 @@ Sarness is two programs that talk over a versioned HTTP/WebSocket API:
    * **Cancel** → cooperative (checked inside every sampler step); if the worker
      does not stop within 25 s it is killed and restarted.
 
+## Experiments
+
+Experiments are interactive features that need sub-second GPU round trips, which the job queue is not
+designed for. Each experiment registers with `experiments/registry.py`. A GPU experiment gets its own worker
+process (`experiments/worker.py`), spawned on first use and exited after an idle timeout, with the same crash
+isolation as the job worker. Requests go through a latest-wins scheduler (`experiments/scheduler.py`): one
+pending request per canvas session, and stale work is cancelled between steps.
+
+Experiments always give way to the rest of Sarness:
+* Dispatching a queued image/video job calls `experiments.yield_gpu()`. This cancels experiment work and stops
+  the experiment's worker before the job's admission check.
+* Loading a chat model does the same.
+* While the AI gateway is running a GPU job, an idle experiment stands down.
+
+Saved experiment documents live in the `experiment_documents` table. God's Paintbrush, its models and its
+measurements are described in [EXPERIMENTS.md](EXPERIMENTS.md).
+
 ## Memory placement
 
 | Model family | `gpu` | `offload` | `split` (video only) | `sequential` |
@@ -102,6 +119,7 @@ All canonical data lives on the server under the engine data directory
 config.json        bind address, port, token hash, URL-signing key (0600)
 sarness.db         SQLite database (WAL)
 models/            llm/ image/ video/ upscaler/ vae/ lora/ controlnet/
+                   experiments/<experiment>/<component>/  (not scanned as ordinary models)
 outputs/images/YYYY/MM/sarness-…png     generated images (PNG embeds metadata)
 outputs/videos/YYYY/MM/sarness-…mp4     generated videos
 thumbs/            WebP thumbnails

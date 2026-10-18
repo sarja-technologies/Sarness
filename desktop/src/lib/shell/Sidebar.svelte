@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Boxes, ChevronsUpDown, FolderPlus, Library, PanelLeftClose, PanelLeftOpen, Plus, Search, Server, Settings, SquarePen } from '@lucide/svelte';
+  import { Boxes, Briefcase, ChevronsUpDown, FlaskConical, FolderPlus, Library, PanelLeftClose, PanelLeftOpen, Search, Server, Settings, SquarePen } from '@lucide/svelte';
   import { api, qs } from '../api/client';
   import type { Conversation } from '../api/types';
   import logo from '../assets/logo.svg';
@@ -18,8 +18,11 @@
   import { agentStore } from '../agent/state.svelte';
   import { workspaceTitle } from '../agent/prompt';
   import { MODE_LABEL } from '../workspace/params';
+  import SidebarExperiments from '../experiments/SidebarExperiments.svelte';
+  import { enterExperiments, enterWork } from '../experiments/store.svelte';
 
   const collapsed = $derived(prefs.sidebarCollapsed);
+  const space = $derived(prefs.view === 'experiments' ? 'experiments' : 'work');
   const links: { id: View; label: string; icon: any; key: string }[] = [
     { id: 'library', label: 'Library', icon: Library, key: 'Alt+2' },
     { id: 'models', label: 'Models', icon: Boxes, key: 'Alt+3' },
@@ -47,7 +50,7 @@
   $effect(() => {
     const term = q.trim();
     clearTimeout(timer);
-    if (!term || conn.state !== 'online') {
+    if (!term || conn.state !== 'online' || space !== 'work') {
       hits = new Set();
       return;
     }
@@ -114,12 +117,25 @@
     {#if !collapsed}<span class="word">Sarness</span>{/if}
   </div>
 
-  <button class="new" onclick={newConversation} use:tooltip={collapsed ? 'New conversation' : null}>
-    <SquarePen />{#if !collapsed}<span>New conversation</span>{/if}
-  </button>
+  <div class="space" role="tablist" aria-label="Workspace">
+    <button role="tab" aria-selected={space === 'work'} class:on={space === 'work'} onclick={enterWork} use:tooltip={collapsed ? 'Work' : null}>
+      <Briefcase />{#if !collapsed}<span>Work</span>{/if}
+    </button>
+    <button role="tab" aria-selected={space === 'experiments'} class:on={space === 'experiments'} onclick={enterExperiments}
+            use:tooltip={collapsed ? 'Experiments  ·  Alt+6' : null}>
+      <FlaskConical />{#if !collapsed}<span>Experiments</span>{/if}
+    </button>
+  </div>
+
+  {#if space === 'work'}
+    <button class="new" onclick={newConversation} use:tooltip={collapsed ? 'New conversation' : null}>
+      <SquarePen />{#if !collapsed}<span>New conversation</span>{/if}
+    </button>
+  {/if}
 
   {#if !collapsed}
-    <label class="search"><Search /><input bind:value={q} placeholder="Search conversations" aria-label="Search conversations" /></label>
+    <label class="search"><Search /><input bind:value={q} placeholder={space === 'work' ? 'Search conversations' : 'Search paintings'}
+      aria-label={space === 'work' ? 'Search conversations' : 'Search paintings'} /></label>
 
     <button class="project" onclick={openProjects}>
       <span class="dot" style:background={currentProject() ? 'var(--accent-hi)' : 'var(--text-3)'}></span>
@@ -130,6 +146,9 @@
       <ChevronsUpDown />
     </button>
 
+    {#if space === 'experiments'}
+      <SidebarExperiments query={q} />
+    {:else}
     <nav class="history" aria-label="Conversation history">
       {#each groups as g (g.label)}
         <div class="sect">{g.label}</div>
@@ -143,6 +162,7 @@
       {/each}
       {#if !visible.length}<p class="none faint">{q.trim() ? 'No matches' : 'Your conversations appear here'}</p>{/if}
     </nav>
+    {/if}
   {:else}
     <div class="grow"></div>
   {/if}
@@ -165,6 +185,13 @@
   .sidebar { grid-row: 1 / span 2; display: flex; flex-direction: column; gap: 8px; padding: 12px 10px 10px; background: var(--bg-1); min-width: 0; overflow: hidden; }
   .brand { display: flex; align-items: center; gap: 10px; padding: 4px 6px 6px; height: 40px; }
   .brand img { flex-shrink: 0; border-radius: 8px; }
+  .space { display: flex; gap: 2px; padding: 3px; border-radius: var(--r-md); background: var(--bg-3); }
+  .space button { flex: 1; display: flex; align-items: center; justify-content: center; gap: 7px; height: 30px; border: 0; border-radius: var(--r-sm); background: none; color: var(--text-2); font-size: var(--fs-sm); font-weight: 600; cursor: pointer; transition: background var(--t-1), color var(--t-1); }
+  .space button :global(svg) { width: 14px; height: 14px; flex-shrink: 0; }
+  .space button:hover { color: var(--text-0); }
+  .space button.on { background: var(--bg-0); color: var(--text-0); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08); }
+  .space button.on :global(svg) { color: var(--accent); }
+  .collapsed .space { flex-direction: column; }
   .word { font-weight: 650; font-size: 16px; letter-spacing: -0.02em; color: var(--text-0); }
   .new { display: flex; align-items: center; gap: 10px; height: 38px; padding: 0 10px; border-radius: var(--r-md); border: 1px solid var(--line-1); background: var(--bg-0); color: var(--text-0); font-weight: 600; font-size: var(--fs-md); cursor: pointer; transition: border-color var(--t-1), background var(--t-1); }
   .new:hover { border-color: var(--accent); }

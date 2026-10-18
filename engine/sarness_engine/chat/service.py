@@ -169,6 +169,9 @@ class ChatService:
                     # (including the CUDA context) before llama.cpp allocates.
                     await asyncio.to_thread(self.jobs.supervisor.stop)
                     self.bus.publish("worker.status", {"loaded": [], "stopped": True})
+                exps = self.jobs.experiments
+                if exps is not None and exps.gpu_active():
+                    await exps.yield_gpu("loading a chat model")
             self.bus.publish("llm.status", {**st, "state": "loading", "model_id": model_id})
             try:
                 await asyncio.to_thread(self.llama.load, info, ctx=ctx, gpu_layers=ngl,

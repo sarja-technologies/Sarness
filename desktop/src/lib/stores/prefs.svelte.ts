@@ -1,9 +1,13 @@
 // Persisted UI preferences (per desktop). Engine-side data never lives here.
 
-export type View = 'workspace' | 'system' | 'library' | 'models' | 'settings';
+export type View = 'workspace' | 'system' | 'library' | 'models' | 'settings' | 'experiments';
+export type WorkView = Exclude<View, 'experiments'>;
+export const VIEWS: View[] = ['workspace', 'system', 'library', 'models', 'settings', 'experiments'];
 
 interface Prefs {
   view: View;
+  /** Last view of the Work space, restored when switching back from Experiments. */
+  workView: WorkView;
   sidebarCollapsed: boolean;
   panelSizes: Record<string, number>;
   imageMode: 'simple' | 'advanced';
@@ -22,6 +26,7 @@ const KEY = 'sarness.prefs.v1';
 
 const defaults: Prefs = {
   view: 'workspace',
+  workView: 'workspace',
   sidebarCollapsed: false,
   panelSizes: {},
   imageMode: 'simple',
@@ -41,7 +46,8 @@ function load(): Prefs {
     const raw = localStorage.getItem(KEY);
     if (raw) {
       const v = { ...defaults, ...JSON.parse(raw) } as Prefs;
-      if (!['workspace', 'system', 'library', 'models', 'settings'].includes(v.view)) v.view = 'workspace';
+      if (!VIEWS.includes(v.view)) v.view = 'workspace';
+      if (!VIEWS.includes(v.workView) || v.workView === ('experiments' as View)) v.workView = 'workspace';
       if (!['light', 'dark', 'system'].includes(v.theme)) v.theme = 'light';
       return v;
     }
