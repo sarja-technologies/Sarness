@@ -4,6 +4,8 @@
 mod agent;
 mod config;
 mod discovery;
+#[doc(hidden)]
+pub mod headless;
 mod proxy;
 mod snp;
 mod ssh;

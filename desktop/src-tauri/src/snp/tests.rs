@@ -1204,8 +1204,8 @@ mod adapter_tests {
         assert_eq!(r.path_params, vec![("cid".to_string(), "c 1".to_string())]);
         let r = t.route("POST", "/v1/downloads/d_9/pause").unwrap();
         assert_eq!((r.op.op.as_str(), r.path_params.len()), ("download.action", 2));
-        assert_eq!(name("GET", "/v1/experiments/paintbrush/status").as_deref(), Some("paintbrush.status"));
-        assert_eq!(name("POST", "/v1/experiments/paintbrush/renders/r1/save").as_deref(), Some("paintbrush.render.save"));
+        assert_eq!(name("GET", "/v1/experiments/gods-paintbrush/status").as_deref(), Some("paintbrush.status"));
+        assert_eq!(name("POST", "/v1/experiments/gods-paintbrush/renders/r1/save").as_deref(), Some("paintbrush.render.save"));
         assert_eq!(name("GET", "/v1/files/f_1").as_deref(), Some("file.get"));
         assert_eq!(name("POST", "/v1/files/f_1/sign").as_deref(), Some("file.sign"));
         assert_eq!(name("GET", "/v1/events").as_deref(), Some("event.subscribe"));
@@ -1367,7 +1367,7 @@ mod adapter_tests {
             "paintbrush.render",
             vec![Reply::Error { code: "conflict".into(), status: 409, message: "superseded by a newer request".into(), retryable: false, detail: Some(m(vec![("superseded", Value::Bool(true))])) }],
         );
-        let r = rig.req("POST", "/v1/experiments/paintbrush/render").json(&serde_json::json!({})).send().await.unwrap();
+        let r = rig.req("POST", "/v1/experiments/gods-paintbrush/render").json(&serde_json::json!({})).send().await.unwrap();
         assert_eq!(r.status(), 409);
         let v: serde_json::Value = r.json().await.unwrap();
         assert_eq!(v["detail"], "superseded by a newer request");
