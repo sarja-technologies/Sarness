@@ -94,6 +94,30 @@ def total_vram_mb() -> int:
     return torch.cuda.mem_get_info()[1] // (1024 * 1024)
 
 
+_UNIFIED: bool | None = None
+
+
+def unified_memory() -> bool:
+    """True on GPUs that allocate from system RAM (DGX Spark GB10, Jetson). There, CPU offload
+    saves no memory and only slows generation down, and cudaMemGetInfo under-reports what can be
+    allocated (it ignores reclaimable page cache), so pipelines always stay resident."""
+    global _UNIFIED
+    if _UNIFIED is None:
+        try:
+            from ..hardware import gpus
+
+            g = gpus()
+            _UNIFIED = bool(g and g[0].get("unified_memory"))
+        except Exception:  # pragma: no cover
+            _UNIFIED = False
+    return _UNIFIED
+
+
+# Families whose diffusers pipeline is called end to end (prompt → images/frames) instead of
+# through Sarness' encode / sample / decode nodes.
+NATIVE_PIPELINES = {"qwenimage21": "QwenImage21Pipeline", "ltx2": "LTX2Pipeline"}
+
+
 def _has(path: Path, pattern: str) -> bool:
     return any(path.glob(pattern))
 
@@ -168,6 +192,8 @@ class ModelManager:
     def _choose_mode(self, requested: str, need_gpu_mb: int, keep: set[str]) -> str:
         if not cuda_available():
             return "cpu"
+        if requested == "auto" and unified_memory():
+            return "gpu"
         if requested in ("gpu", "offload", "sequential"):
             if requested == "gpu":
                 self.make_room(need_gpu_mb, keep)
@@ -192,6 +218,8 @@ class ModelManager:
         if cached is not None:
             pipe, mode = cached
             return ModelHandle(key, info["id"], family, info, pipe, mode)
+        if family in NATIVE_PIPELINES:
+            return self._native_pipeline("image", info, memory_mode)
 
         from diffusers import StableDiffusionPipeline, StableDiffusionXLPipeline
 
@@ -273,6 +301,8 @@ class ModelManager:
         if cached is not None:
             pipe, mode = cached
             return ModelHandle(key, info["id"], family, info, pipe, mode)
+        if family in NATIVE_PIPELINES:
+            return self._native_pipeline("video", info, memory_mode)
         if family not in ("wan", "wan22-ti2v"):
             raise ValueError(f"unsupported video family {family}")
         from diffusers import AutoencoderKLWan, WanPipeline
@@ -293,6 +323,8 @@ class ModelManager:
         self.make_room(est, keep={key})
         free = free_vram_mb()
         mode = memory_mode
+        if mode == "auto" and unified_memory():
+            mode = "gpu"
         if mode == "auto":
             if free >= te_bytes_mb + est + self.headroom_mb:
                 mode = "gpu"
@@ -315,6 +347,31 @@ class ModelManager:
                     _stream_module(pipe.transformer, "leaf_level")
         log.info("loaded %s in %.1fs, mode=%s (text encoder %d MiB)", info["id"], time.perf_counter() - t0, mode, te_bytes_mb)
         self._cache[key] = _Loaded((pipe, mode), est, "video", mode)
+        return ModelHandle(key, info["id"], family, info, pipe, mode)
+
+
+    def _native_pipeline(self, kind: str, info: dict[str, Any], memory_mode: str) -> ModelHandle:
+        """Loads a pipeline that runs end to end (Qwen-Image 2.1, LTX-2) in bf16."""
+        import diffusers
+
+        family = info["family"]
+        key = f"{kind}:{info['id']}"
+        cls = getattr(diffusers, NATIVE_PIPELINES[family], None)
+        if cls is None:
+            raise ValueError(f"this diffusers version ({diffusers.__version__}) has no {NATIVE_PIPELINES[family]}")
+        t0 = time.perf_counter()
+        dtype = torch.bfloat16 if cuda_available() else torch.float32
+        pipe = cls.from_pretrained(str(info["path"]), dtype=dtype)
+        pipe.set_progress_bar_config(disable=True)
+        pipe._sarness_default_scheduler = pipe.scheduler
+        est = int(info.get("vram_mb") or 30000)
+        self.make_room(est, keep={key})
+        mode = self._choose_mode(memory_mode, est, keep={key})
+        if mode == "split":
+            mode = "offload"
+        self._place(pipe, mode)
+        log.info("loaded %s (%s) in %.1fs, mode=%s", info["id"], family, time.perf_counter() - t0, mode)
+        self._cache[key] = _Loaded((pipe, mode), est, kind, mode)
         return ModelHandle(key, info["id"], family, info, pipe, mode)
 
 

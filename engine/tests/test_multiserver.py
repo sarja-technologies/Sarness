@@ -203,3 +203,144 @@ def test_hardware_arch_is_normalised(monkeypatch):
     assert hardware.arch() == "aarch64"
     monkeypatch.setattr(hardware.platform, "machine", lambda: "AMD64")
     assert hardware.arch() == "x86_64"
+
+
+# --------------------------------------------------------------- Spark model families
+def _gguf(path):
+    from test_core import _write_gguf
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _write_gguf(path)
+
+
+def test_registry_new_families_and_nested_mtp(tmp_path):
+    from sarness_engine.models.registry import ModelRegistry
+
+    cfg = load_config(tmp_path / "data")
+    cfg.ensure_dirs()
+    m = cfg.models_dir
+    q = m / "image" / "Qwen--Qwen-Image-2.1"
+    q.mkdir(parents=True)
+    (q / "model_index.json").write_text('{"_class_name": "QwenImage21Pipeline"}')
+    ltx = m / "video" / "some-ltx"
+    ltx.mkdir(parents=True)
+    (ltx / "model_index.json").write_text('{"_class_name": "LTX2Pipeline"}')
+    # Sharded quant in a sub-folder; MTP head at the repo root (unsloth layout).
+    repo = m / "llm" / "unsloth--Qwen3.8-Flash-Next-GGUF"
+    _gguf(repo / "UD-IQ4_XS" / "Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf")
+    _gguf(repo / "UD-IQ4_XS" / "Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00003.gguf")
+    (repo / "mtp-Qwen3.8-Flash-Next-Q8_0.gguf").write_bytes(b"GGUF")
+    (m / "llm" / "mmproj-stray.gguf").write_bytes(b"GGUF")  # belongs to no model in that repo
+    reg = ModelRegistry(Database(cfg.db_path), m)
+    items = {i["id"]: i for i in reg.scan()}
+    assert items["qwen-image-2.1"]["family"] == "qwenimage21" and items["qwen-image-2.1"]["supported"]
+    assert items["video:some-ltx"]["family"] == "ltx2"
+    assert items["video:some-ltx"]["capabilities"]["audio"] is True
+    fn = items["qwen3.8-flash-next@UD-IQ4_XS"]
+    assert fn["meta"]["mtp"].endswith("mtp-Qwen3.8-Flash-Next-Q8_0.gguf")
+    assert fn["meta"]["mmproj"] is None, "a projector outside the repo folder is not attached"
+    assert fn["llama_args"] == ["-lzm", "on"]
+    assert caps_mod.model_kinds(fn) == ["chat", "code", "reasoning"]
+    assert not any("00002-of" in i for i in items), "later shards are not listed as models"
+
+
+class _Ctx:
+    def __init__(self):
+        self.notes, self.steps = {}, []
+
+    def annotate(self, **kw):
+        self.notes.update(kw)
+
+    def progress(self, step, total, text=None, preview=None):
+        self.steps.append((step, total))
+
+
+class _FakeQwenPipe:
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, **kw):
+        from PIL import Image
+
+        self.calls.append(kw)
+        kw["callback_on_step_end"](self, 0, 0, {})
+        return SimpleNamespace(images=[Image.new("RGB", (kw["width"], kw["height"]))] * kw["num_images_per_prompt"])
+
+
+def test_native_image_family_runs_end_to_end():
+    from sarness_engine.runtime.models import ModelHandle
+    from sarness_engine.workflow.nodes import diffusion as d
+    from sarness_engine.workflow.types import WorkflowError
+
+    pipe = _FakeQwenPipe()
+    h = ModelHandle("image:q", "qwen-image-2.1", "qwenimage21", {"name": "Qwen-Image 2.1", "limits": {"multiple": 16}},
+                    pipe, "gpu")
+    ctx = _Ctx()
+    cond = d.encode_prompt(ctx, {"model": h}, {"prompt": "a sign that says SARNESS", "negative_prompt": "",
+                                               "clip_skip": 0})["conditioning"]
+    lat = {"samples": None, "width": 1000, "height": 760, "batch": 2}
+    params = {"seed": 7, "steps": 20, "guidance": 4.0, "denoise": 1.0, "guidance_rescale": 0.0}
+    out = d.image_sampler(ctx, {"model": h, "conditioning": cond, "latent": lat}, params)["latent"]
+    call = pipe.calls[0]
+    assert (call["width"], call["height"]) == (992, 752), "snapped to multiples of 16"
+    assert call["true_cfg_scale"] == 4.0 and call["negative_prompt"] == " "
+    imgs = d.vae_decode(ctx, {"model": h, "latent": out}, {"tiled": False})["image"]
+    assert len(imgs) == 2 and imgs[0].size == (992, 752)
+    with pytest.raises(WorkflowError, match="text-to-image only"):
+        d.image_sampler(ctx, {"model": h, "conditioning": cond, "latent": {**lat, "samples": object()}}, params)
+    params["guidance"] = 1.0
+    d.image_sampler(ctx, {"model": h, "conditioning": cond, "latent": lat}, params)
+    assert "true_cfg_scale" not in pipe.calls[-1]
+
+
+def test_ltx2_sampler_returns_frames_and_audio(monkeypatch):
+    import numpy as np
+    from PIL import Image
+
+    from sarness_engine.runtime.models import ModelHandle
+    from sarness_engine.workflow.nodes import video as v
+
+    class Pipe:
+        vocoder = SimpleNamespace(config={"output_sampling_rate": 24000})
+
+        def __call__(self, **kw):
+            self.kw = kw
+            kw["callback_on_step_end"](self, 0, 0, {})
+            frames = np.zeros((1, kw["num_frames"], kw["height"], kw["width"], 3), dtype=np.float32)
+            return frames, [np.zeros((2, 4800), dtype=np.float32)]
+
+    pipe = Pipe()
+    h = ModelHandle("video:l", "ltx-2.3", "ltx2", {"name": "LTX", "capabilities": {"modes": ["t2v", "i2v"]},
+                                                     "limits": {"multiple": 32, "frame_step": 8}}, pipe, "gpu")
+    ctx = _Ctx()
+    cond = v.encode_video_prompt(ctx, {"model": h}, {"prompt": "waves", "negative_prompt": "blur"})["conditioning"]
+    params = {"width": 770, "height": 515, "frames": 30, "fps": 24, "seed": 1, "steps": 4, "guidance": 3.0,
+              "flow_shift": 3.0}
+    out = v.video_sampler(ctx, {"model": h, "conditioning": cond}, params)["video"]
+    assert (pipe.kw["width"], pipe.kw["height"], pipe.kw["num_frames"]) == (768, 512, 25)
+    assert len(out["frames"]) == 25 and isinstance(out["frames"][0], Image.Image)
+    assert out["audio"]["rate"] == 24000 and out["audio"]["samples"].shape == (2, 4800)
+    assert v.trim(ctx, {"video": out}, {"start_frame": 0, "end_frame": 5})["video"]["audio"] is None
+
+
+def test_audio_is_muxed_into_mp4(tmp_path):
+    import subprocess
+
+    import imageio.v2 as iio
+    import imageio_ffmpeg
+    import numpy as np
+
+    from sarness_engine.workflow.nodes.output import _mux_audio
+
+    path = tmp_path / "clip.mp4"
+    w = iio.get_writer(str(path), format="FFMPEG", fps=24, codec="libx264", macro_block_size=1,
+                       ffmpeg_params=["-pix_fmt", "yuv420p"])
+    for _ in range(24):
+        w.append_data(np.zeros((64, 64, 3), dtype=np.uint8))
+    w.close()
+    t = np.linspace(0, 1, 24000, dtype=np.float32)
+    assert _mux_audio(path, {"samples": np.stack([np.sin(440 * 2 * np.pi * t)] * 2), "rate": 24000}, "mp4")
+    probe = subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-hide_banner", "-i", str(path)],
+                           capture_output=True, text=True).stderr
+    assert "Audio: aac" in probe and "Video: h264" in probe
+    assert not list(tmp_path.glob("*.wav")) and not list(tmp_path.glob("*.muxed.*"))

@@ -33,6 +33,9 @@ PIPELINE_FAMILIES = {
     "StableDiffusionPipeline": ("image", "sd15"),
     "WanPipeline": ("video", "wan"),
     "WanImageToVideoPipeline": ("video", "wan"),
+    "QwenImage21Pipeline": ("image", "qwenimage21"),
+    "LTX2Pipeline": ("video", "ltx2"),
+    "LTX2ImageToVideoPipeline": ("video", "ltx2"),
 }
 UNSUPPORTED_PIPELINES = {
     "FluxPipeline", "StableDiffusion3Pipeline", "LTXPipeline", "HunyuanVideoPipeline", "CogVideoXPipeline",
@@ -178,10 +181,13 @@ class ModelRegistry:
                     continue
                 if re.search(r"-0000[2-9]-of-", f.name):
                     continue  # later shards of split GGUFs
-                mmproj = sorted(f.parent.glob("mmproj*.gguf"))
+                mmproj = _companion(f, d, "mmproj*.gguf")
                 entry, quant = self._match_gguf(f)
                 meta = gguf_metadata(f)
                 meta["mmproj"] = str(mmproj[0]) if mmproj else None
+                # Multi-token-prediction head for speculative decoding (llama.cpp --spec-type draft-mtp).
+                mtp = _companion(f, d, "mtp-*.gguf")
+                meta["mtp"] = str(mtp[0]) if mtp else None
                 mid = f"{entry['id']}@{quant}" if entry else "gguf:" + slugify(f.stem)
                 out.append({
                     "id": mid, "catalog_id": entry["id"] if entry else None,
@@ -201,7 +207,7 @@ class ModelRegistry:
     def _match_gguf(self, f: Path) -> tuple[dict[str, Any] | None, str | None]:
         for e in CATALOG:
             for q in e.get("quantizations") or []:
-                if f.name == q["files"][0]:
+                if f.name == Path(q["files"][0]).name:
                     return e, q["id"]
         return None, None
 
@@ -277,7 +283,7 @@ class ModelRegistry:
         info["unsupported_reason"] = meta.get("unsupported")
         if entry:
             for k in ("description", "capabilities", "defaults", "limits", "vram_mb", "vram_offload_mb", "license",
-                      "tags", "notes", "base"):
+                      "tags", "notes", "base", "llama_args"):
                 if k in entry:
                     info[k] = entry[k]
             if row["category"] == "llm":
@@ -313,6 +319,11 @@ class ModelRegistry:
             return {"modes": ["t2v"], "negative_prompt": True, "start_frame": False, "end_frame": False, "motion": []}
         if fam == "wan22-ti2v":
             return {"modes": ["t2v", "i2v"], "negative_prompt": True, "start_frame": True, "end_frame": False, "motion": []}
+        if fam == "qwenimage21":
+            return {"modes": ["txt2img"], "lora": False, "controlnet": False, "negative_prompt": True}
+        if fam == "ltx2":
+            return {"modes": ["t2v", "i2v"], "negative_prompt": True, "start_frame": True, "end_frame": False,
+                    "motion": [], "audio": True}
         return {}
 
     def worker_info(self, model_id: str) -> dict[str, Any] | None:
@@ -330,10 +341,26 @@ _FAMILY_DEFAULTS = {
     "sd15": {"steps": 30, "guidance": 7.0, "width": 512, "height": 512, "scheduler": "dpmpp_2m_karras"},
     "wan": {"steps": 30, "guidance": 5.0, "width": 832, "height": 480, "frames": 33, "fps": 16, "flow_shift": 3.0},
     "wan22-ti2v": {"steps": 40, "guidance": 5.0, "width": 1280, "height": 704, "frames": 49, "fps": 24, "flow_shift": 5.0},
+    "qwenimage21": {"steps": 40, "guidance": 4.0, "width": 1024, "height": 1024},
+    "ltx2": {"steps": 30, "guidance": 3.0, "width": 768, "height": 512, "frames": 121, "fps": 24},
 }
 _FAMILY_LIMITS = {
     "sdxl": {"steps": [1, 100], "guidance": [0, 20], "min_side": 512, "max_side": 1536, "multiple": 8},
     "sd15": {"steps": [1, 100], "guidance": [0, 20], "min_side": 256, "max_side": 1024, "multiple": 8},
     "wan": {"steps": [4, 60], "frames": [5, 81], "frame_step": 4, "multiple": 16},
     "wan22-ti2v": {"steps": [4, 60], "frames": [5, 121], "frame_step": 4, "multiple": 32},
+    "qwenimage21": {"steps": [4, 80], "guidance": [1, 10], "min_side": 512, "max_side": 2048, "multiple": 16},
+    "ltx2": {"steps": [4, 60], "frames": [9, 257], "frame_step": 8, "multiple": 32},
 }
+
+
+def _companion(model: Path, category_dir: Path, pattern: str) -> list[Path]:
+    """Files matching ``pattern`` next to ``model`` or in a parent folder up to the repo folder
+    (quantisations often live in sub-folders while the projector / MTP head sits at the root)."""
+    d = model.parent
+    found = sorted(d.glob(pattern))
+    # Walk up while still strictly inside the category folder, so another model's files never match.
+    while not found and d != category_dir and category_dir in d.parent.parents:
+        d = d.parent
+        found = sorted(d.glob(pattern))
+    return found

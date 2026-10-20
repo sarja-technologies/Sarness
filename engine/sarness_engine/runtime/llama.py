@@ -298,12 +298,18 @@ class LlamaServer:
                 args += ["-ngl", str(gpu_layers)]
             if mmproj:
                 args += ["--mmproj", mmproj]
+            mtp = (model.get("meta") or {}).get("mtp")
+            if mtp:
+                # Multi-token prediction: the model's own MTP head drafts tokens (no second model).
+                args += ["--spec-type", "draft-mtp", "-md", mtp, "--spec-draft-n-max", "3"]
+            args += [str(a) for a in (model.get("llama_args") or [])]
             self.logs_dir.mkdir(parents=True, exist_ok=True)
             logf = open(self.logs_dir / "llama-server.log", "ab")
             log.info("starting llama-server for %s (ctx=%d, ngl=%d)", model["id"], ctx, gpu_layers)
             self.state, self.error = "loading", None
             self.model = model
-            self.options = {"ctx": ctx, "gpu_layers": gpu_layers, "flash_attn": flash_attn, "mmproj": mmproj}
+            self.options = {"ctx": ctx, "gpu_layers": gpu_layers, "flash_attn": flash_attn, "mmproj": mmproj,
+                            "mtp": bool(mtp)}
             self.proc = subprocess.Popen(args, stdout=logf, stderr=subprocess.STDOUT, env=self.runtime.env(),
                                          start_new_session=True)
         deadline = time.time() + timeout

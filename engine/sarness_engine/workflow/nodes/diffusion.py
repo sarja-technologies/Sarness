@@ -1,4 +1,8 @@
-"""Image diffusion nodes backed by Hugging Face Diffusers (SDXL / SD 1.5 families)."""
+"""Image diffusion nodes backed by Hugging Face Diffusers.
+
+SDXL / SD 1.5 run step by step through encode → sample → decode. Newer families
+(Qwen-Image 2.1) run their diffusers pipeline end to end: the prompt node passes the
+text through, the sampler returns finished images and VAE Decode passes them on."""
 
 from __future__ import annotations
 
@@ -10,7 +14,8 @@ from ..registry import node
 from ..types import (CONDITIONING, CONTROL, CONTROLNET, FLOAT, IMAGE, INT, LATENT, MASK, MODEL, SCHEDULER, STRING,
                      VAE, Param, Socket, WorkflowError)
 
-IMAGE_FAMILIES = ["sdxl", "sd15", "gateway"]
+IMAGE_FAMILIES = ["sdxl", "sd15", "qwenimage21", "gateway"]
+NATIVE_IMAGE_FAMILIES = {"qwenimage21"}
 MEMORY_MODES = [
     {"value": "auto", "label": "Auto"},
     {"value": "gpu", "label": "GPU (fastest)"},
@@ -94,6 +99,10 @@ def encode_prompt(ctx, inputs, params):
 
     handle = inputs["model"]
     pipe = handle.pipe
+    if handle.family in NATIVE_IMAGE_FAMILIES:
+        ctx.annotate(prompt=params["prompt"], negative_prompt=params["negative_prompt"])
+        return {"conditioning": {"family": handle.family, "prompt": params["prompt"],
+                                 "negative_prompt": params["negative_prompt"]}}
     from ...runtime.models import apply_loras, device
 
     apply_loras(handle)  # LoRAs may patch the text encoders
@@ -229,6 +238,8 @@ def image_sampler(ctx, inputs, params):
     mask = inputs.get("mask")
     if cond.get("family") != handle.family:
         raise WorkflowError("conditioning was encoded with a different model family")
+    if handle.family in NATIVE_IMAGE_FAMILIES:
+        return _native_sample(ctx, handle, cond, lat, control, mask, params)
 
     base = handle.pipe
     apply_loras(handle)
@@ -291,6 +302,35 @@ def image_sampler(ctx, inputs, params):
     return {"latent": {"samples": samples, "width": w, "height": h, "batch": samples.shape[0], "source": lat.get("source")}}
 
 
+def _native_sample(ctx, handle, cond, lat, control, mask, params):
+    import torch
+
+    name = handle.info.get("name") or handle.model_id
+    if mask is not None or control is not None or lat.get("samples") is not None:
+        raise WorkflowError(f"{name} supports text-to-image only in Sarness (no image-to-image, inpainting or ControlNet)")
+    mult = int((handle.info.get("limits") or {}).get("multiple") or 16)
+    w, h = max(mult, lat["width"] // mult * mult), max(mult, lat["height"] // mult * mult)
+    steps, guidance, seed = int(params["steps"]), float(params["guidance"]), int(params["seed"])
+    batch = int(lat.get("batch") or 1)
+
+    def cb(pipe, step, timestep, kwargs):
+        ctx.progress(step + 1, steps, f"Step {step + 1}/{steps}")
+        return kwargs
+
+    negative = cond.get("negative_prompt") or ""
+    kwargs: dict[str, Any] = dict(
+        prompt=cond["prompt"], height=h, width=w, num_inference_steps=steps, num_images_per_prompt=batch,
+        generator=torch.Generator(device="cpu").manual_seed(seed), output_type="pil", callback_on_step_end=cb)
+    if guidance > 1:
+        # True CFG only engages with a negative prompt; a blank one is the model card's default.
+        kwargs.update(true_cfg_scale=guidance, negative_prompt=negative or " ")
+    ctx.progress(0, steps, "Sampling")
+    with torch.inference_mode():
+        images = handle.pipe(**kwargs).images
+    ctx.annotate(seed=seed, steps=steps, guidance=guidance, mode="txt2img", width=w, height=h)
+    return {"latent": {"samples": None, "images": images, "width": w, "height": h, "batch": len(images), "source": None}}
+
+
 def _variant_pipe(base, family: str, mode: str, control):
     """Builds a task-specific pipeline that shares the loaded components."""
     import diffusers as d
@@ -348,6 +388,8 @@ def vae_decode(ctx, inputs, params):
 
     handle = inputs["model"]
     lat = inputs["latent"]
+    if lat.get("images") is not None:  # end-to-end pipelines return finished images
+        return {"image": lat["images"]}
     if lat.get("samples") is None:
         raise WorkflowError("nothing to decode: connect latents from a sampler or VAE Encode")
     vae = _vae_for(handle, inputs.get("vae"))
@@ -390,6 +432,8 @@ def vae_encode(ctx, inputs, params):
     from ...runtime.models import device
 
     handle = inputs["model"]
+    if handle.family in NATIVE_IMAGE_FAMILIES:
+        raise WorkflowError(f"{handle.info.get('name') or handle.model_id} does not support image-to-image in Sarness")
     vae = _vae_for(handle, inputs.get("vae"))
     pipe = handle.pipe
     images = [im.resize((im.width // 8 * 8, im.height // 8 * 8)) for im in inputs["image"]]
