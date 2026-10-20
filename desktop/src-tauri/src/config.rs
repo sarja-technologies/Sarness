@@ -55,6 +55,9 @@ impl Transport {
 
 pub const DEFAULT_SNP_PORT: u16 = 8744;
 
+/// Workload kinds a server can be preferred for (see `Profile::preferred_tasks`).
+pub const TASKS: &[&str] = &["chat", "code", "vision", "image", "video"];
+
 fn default_snp_port() -> u16 {
     DEFAULT_SNP_PORT
 }
@@ -82,6 +85,8 @@ struct ProfileRaw {
     snp_pin: Option<String>,
     #[serde(default)]
     snp_server_name: Option<String>,
+    #[serde(default)]
+    preferred_tasks: Vec<String>,
 }
 
 impl From<ProfileRaw> for Profile {
@@ -100,6 +105,7 @@ impl From<ProfileRaw> for Profile {
             snp_port: r.snp_port,
             snp_pin: r.snp_pin,
             snp_server_name: r.snp_server_name,
+            preferred_tasks: r.preferred_tasks,
         }
     }
 }
@@ -128,6 +134,9 @@ pub struct Profile {
     pub snp_pin: Option<String>,
     /// Name to verify against a CA-issued certificate (only used without a pin).
     pub snp_server_name: Option<String>,
+    /// Workloads the router prefers this server for when a model exists on several
+    /// servers: any of "chat", "code", "vision", "image", "video".
+    pub preferred_tasks: Vec<String>,
 }
 
 fn default_scheme() -> String {
@@ -145,6 +154,13 @@ impl Profile {
         self.scheme = if self.transport == Transport::Https { "https".into() } else { "http".into() };
         self.snp_pin = self.snp_pin.take().map(|p| p.trim().to_lowercase()).filter(|p| !p.is_empty());
         self.snp_server_name = self.snp_server_name.take().map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+        let mut tasks: Vec<String> = Vec::new();
+        for t in self.preferred_tasks.drain(..) {
+            if TASKS.contains(&t.as_str()) && !tasks.contains(&t) {
+                tasks.push(t);
+            }
+        }
+        self.preferred_tasks = tasks;
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -193,12 +209,22 @@ impl Profile {
     }
 }
 
+pub const STORE_VERSION: u32 = 2;
+
+/// `profiles.json`. Version 1 (no `version` field) had one active profile; version 2 keeps
+/// several engines connected at once (`connected`) and treats `active` as the *primary*
+/// engine (the one un-prefixed `/v1` requests go to). Older desktops ignore the new fields.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct ProfileStore {
+    #[serde(default)]
+    pub version: u32,
     #[serde(default)]
     pub profiles: Vec<Profile>,
     #[serde(default)]
     pub active: Option<String>,
+    /// Profiles to connect at startup, in order.
+    #[serde(default)]
+    pub connected: Vec<String>,
 }
 
 pub fn config_dir() -> PathBuf {
@@ -226,13 +252,38 @@ impl ProfileStore {
                 for p in st.profiles.iter_mut() {
                     p.has_token = get_token(&p.id).is_some();
                 }
+                st.migrate();
                 st
             })
             .unwrap_or_default()
     }
 
+    /// v1 → v2: the single active profile becomes the primary *and* the only connected one.
+    /// Also drops ids of profiles that no longer exist.
+    pub fn migrate(&mut self) {
+        if self.version < 2 {
+            if self.connected.is_empty() {
+                self.connected.extend(self.active.iter().cloned());
+            }
+            self.version = STORE_VERSION;
+        }
+        let ids: Vec<String> = self.profiles.iter().map(|p| p.id.clone()).collect();
+        self.connected.retain(|id| ids.contains(id));
+        self.connected.dedup();
+        if self.active.as_ref().is_some_and(|a| !ids.contains(a)) {
+            self.active = self.connected.first().cloned();
+        }
+    }
+
     pub fn save(&self) -> std::io::Result<()> {
         write_private(&profiles_path(), serde_json::to_string_pretty(self)?.as_bytes())
+    }
+
+    pub fn mark_connected(&mut self, id: &str, on: bool) {
+        self.connected.retain(|x| x != id);
+        if on {
+            self.connected.push(id.to_string());
+        }
     }
 
     pub fn upsert(&mut self, p: Profile) {
@@ -333,6 +384,7 @@ mod tests {
             snp_port: DEFAULT_SNP_PORT,
             snp_pin: None,
             snp_server_name: None,
+            preferred_tasks: vec![],
         }
     }
 
@@ -442,5 +494,36 @@ mod tests {
         let mut p = profile();
         p.host = "fd7a:115c::1".into();
         assert_eq!(p.direct_url(), "http://[fd7a:115c::1]:8742");
+    }
+
+    /// A 0.2 desktop's profiles.json: one active profile, no version. It becomes the primary and
+    /// the only auto-connected engine; ids of deleted profiles are dropped.
+    #[test]
+    fn migrates_single_active_store_to_multi_engine() {
+        let v1 = r#"{"profiles":[{"id":"rtx","name":"RTX","host":"10.0.0.2","port":8742,"scheme":"http","mode":"direct","transport":"snp","snp_port":8744}],"active":"rtx"}"#;
+        let mut st: ProfileStore = serde_json::from_str(v1).unwrap();
+        st.migrate();
+        assert_eq!(st.version, STORE_VERSION);
+        assert_eq!(st.connected, vec!["rtx".to_string()]);
+        assert_eq!(st.active.as_deref(), Some("rtx"));
+        assert!(st.profiles[0].preferred_tasks.is_empty());
+
+        st.mark_connected("spark", true);
+        st.mark_connected("rtx", true);
+        assert_eq!(st.connected, vec!["spark".to_string(), "rtx".to_string()]);
+        st.migrate(); // "spark" has no profile
+        assert_eq!(st.connected, vec!["rtx".to_string()]);
+        // Round trip, and the written file stays readable by older desktops (unknown fields ignored).
+        let text = serde_json::to_string(&st).unwrap();
+        let back: ProfileStore = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.connected, st.connected);
+    }
+
+    #[test]
+    fn preferred_tasks_are_normalised() {
+        let mut p = profile();
+        p.preferred_tasks = vec!["video".into(), "bogus".into(), "chat".into(), "video".into()];
+        p.normalize();
+        assert_eq!(p.preferred_tasks, vec!["video".to_string(), "chat".to_string()]);
     }
 }

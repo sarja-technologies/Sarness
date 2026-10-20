@@ -1154,9 +1154,11 @@ async fn test_connection_failures_name_the_stage_and_carry_both_pins() {
 // ===========================================================================
 mod adapter_tests {
     use super::*;
-    use crate::proxy::{self, ProxyShared, Upstream};
+    use crate::proxy::{self, Backend, ProxyShared, Upstream};
     use crate::snp::adapter::{self, OpMode, SnpBackend};
     use futures_util::{SinkExt, StreamExt};
+
+    const RIG_ENGINE: &str = "snp1";
 
     struct Rig {
         server: Server,
@@ -1174,7 +1176,7 @@ mod adapter_tests {
             let dir = tempfile::tempdir().unwrap();
             let shared = ProxyShared::new(dir.path().to_path_buf());
             let port = proxy::serve(shared.clone()).await.unwrap();
-            *shared.snp.write().await = Some(Arc::new(SnpBackend { client: client(&server) }));
+            shared.set_engine(RIG_ENGINE, Some(Backend::Snp(Arc::new(SnpBackend { client: client(&server) })))).await;
             Rig { server, shared, base: format!("http://127.0.0.1:{port}"), http: reqwest::Client::new(), dir }
         }
         fn url(&self, path: &str) -> String {
@@ -1520,7 +1522,7 @@ mod adapter_tests {
         let body = r.bytes().await.unwrap();
         let expect: Vec<u8> = (0..300u32).map(|i| (i % 200) as u8).collect();
         assert_eq!(body.as_ref(), &expect[..]);
-        assert!(proxy::cached_media_path(rig.dir.path(), "f_1").unwrap().to_string_lossy().ends_with("f_1.png"));
+        assert!(proxy::cached_media_path(rig.dir.path(), Some(RIG_ENGINE), "f_1").unwrap().to_string_lossy().ends_with("f_1.png"));
         let r = rig.http.get(&url).header("range", "bytes=10-19").send().await.unwrap();
         assert_eq!(r.status(), 206);
         assert_eq!(r.bytes().await.unwrap().as_ref(), &expect[10..20]);
@@ -1529,8 +1531,8 @@ mod adapter_tests {
         let r = rig.http.get(rig.url("/v1/files/f_missing")).send().await.unwrap();
         assert_eq!(r.status(), 404);
         assert_eq!(r.json::<serde_json::Value>().await.unwrap()["detail"], "file not found");
-        assert!(proxy::cached_media_path(rig.dir.path(), "f_missing").is_none());
-        assert!(std::fs::read_dir(rig.dir.path().join("media")).unwrap().flatten().all(|e| !e.file_name().to_string_lossy().ends_with(".part")), "no partial files left behind");
+        assert!(proxy::cached_media_path(rig.dir.path(), Some(RIG_ENGINE), "f_missing").is_none());
+        assert!(std::fs::read_dir(rig.dir.path().join("media").join(RIG_ENGINE)).unwrap().flatten().all(|e| !e.file_name().to_string_lossy().ends_with(".part")), "no partial files left behind");
     }
 
     #[tokio::test]
@@ -1577,8 +1579,8 @@ mod adapter_tests {
 
     #[tokio::test]
     async fn auth_failure_is_reported_and_there_is_no_http_fallback() {
-        // A plain TCP listener standing in for the engine's HTTP port. Even with an HTTP upstream
-        // configured, an SNP profile must never talk to it.
+        // A plain TCP listener standing in for the engine's HTTP port. Even with an HTTP engine
+        // connected alongside, an SNP profile must never talk to it.
         let http_port = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let hp = http_port.local_addr().unwrap().port();
         let touched = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -1591,7 +1593,8 @@ mod adapter_tests {
         let server = fake::start().await;
         server.knobs.reject_auth.store(true, SeqCst);
         let rig = Rig::with(server).await;
-        *rig.shared.upstream.write().await = Some(Upstream { base: format!("http://127.0.0.1:{hp}"), token: TOKEN.into() });
+        rig.shared.set_engine("other-http", Some(Backend::Http(Upstream { base: format!("http://127.0.0.1:{hp}"), token: TOKEN.into() }))).await;
+        assert_eq!(rig.shared.primary.read().await.as_deref(), Some(RIG_ENGINE));
         for path in ["/v1/system", "/v1/jobs", "/v1/chat/conversations"] {
             let r = rig.req("GET", path).send().await.unwrap();
             assert_eq!(r.status(), 401, "{path}");
@@ -1619,7 +1622,7 @@ mod adapter_tests {
         let mut cf = cfg(&server);
         let wrong = Pin::parse(&format!("sha256:{}", "ee".repeat(32))).unwrap();
         cf.pin = Some(wrong);
-        *shared.snp.write().await = Some(Arc::new(SnpBackend { client: SnpClient::new(cf) }));
+        shared.set_engine("p", Some(Backend::Snp(Arc::new(SnpBackend { client: SnpClient::new(cf) })))).await;
         let r = reqwest::Client::new().get(format!("http://127.0.0.1:{port}/v1/system?s={}", shared.session)).send().await.unwrap();
         assert_eq!(r.status(), 502);
         let v: serde_json::Value = r.json().await.unwrap();
@@ -1637,7 +1640,7 @@ mod adapter_tests {
 // ===========================================================================
 mod interop {
     use super::*;
-    use crate::proxy::{self, ProxyShared};
+    use crate::proxy::{self, Backend, ProxyShared};
     use crate::snp::adapter::{self, SnpBackend};
 
     // A valid 1x1 PNG.
@@ -1755,7 +1758,7 @@ mod interop {
         let dir = tempfile::tempdir().unwrap();
         let shared = ProxyShared::new(dir.path().to_path_buf());
         let pport = proxy::serve(shared.clone()).await.unwrap();
-        *shared.snp.write().await = Some(Arc::new(SnpBackend { client: SnpClient::new(cfg) }));
+        shared.set_engine("p", Some(Backend::Snp(Arc::new(SnpBackend { client: SnpClient::new(cfg) })))).await;
         let http = reqwest::Client::new();
         let base = format!("http://127.0.0.1:{pport}");
         let s = &shared.session;

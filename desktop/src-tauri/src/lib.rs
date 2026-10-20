@@ -11,9 +11,10 @@ mod snp;
 mod ssh;
 
 use config::{ConnectionMode, Profile, ProfileStore, Transport};
-use proxy::{ProxyShared, Upstream};
+use proxy::{Backend, ProxyShared, Upstream};
 use snp::adapter::SnpBackend;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -26,11 +27,27 @@ struct TunnelHandle {
     task: tokio::task::JoinHandle<()>,
 }
 
+/// One connected engine. Each connection is independent: its own tunnel supervisor and
+/// SNP client, so one server going away never affects the others.
+struct Connection {
+    tunnel: Option<TunnelHandle>,
+    transport: String,
+    snp: Option<snp::SnpClient>,
+}
+
 pub struct Core {
     proxy: Arc<ProxyShared>,
     proxy_port: u16,
-    tunnel: Mutex<Option<TunnelHandle>>,
-    active: Mutex<Option<String>>,
+    conns: Mutex<HashMap<String, Connection>>,
+}
+
+#[derive(Serialize)]
+struct EngineLive {
+    profile_id: String,
+    primary: bool,
+    /// "snp" | "http" | "https"
+    transport: String,
+    snp: Option<SnpLive>,
 }
 
 #[derive(Serialize)]
@@ -38,14 +55,17 @@ struct ProxyInfo {
     url: String,
     session: String,
     connected: bool,
+    /// The primary engine (serves un-prefixed `/v1` requests); kept for single-engine callers.
     profile_id: Option<String>,
-    /// Transport of the active profile: "snp" | "http" | "https".
+    /// Transport of the primary engine: "snp" | "http" | "https".
     transport: Option<String>,
-    /// Live SNP state (negotiated session, connection status) while an SNP profile is active.
+    /// Live SNP state of the primary engine.
     snp: Option<SnpLive>,
+    /// Every connected engine; reach one at `{url}/e/{profile_id}/v1/...`.
+    engines: Vec<EngineLive>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct SnpLive {
     status: snp::client::ClientStatus,
     session: Option<snp::SessionInfo>,
@@ -117,14 +137,13 @@ fn save_profile(mut profile: Profile, token: Option<String>) -> CmdResult<Profil
 
 #[tauri::command]
 async fn delete_profile(core: State<'_, Core>, id: String) -> CmdResult<()> {
-    if core.active.lock().await.as_deref() == Some(&id) {
-        disconnect_inner(&core).await;
-    }
+    disconnect_one(&core, &id).await;
     config::delete_token(&id);
     let mut st = ProfileStore::load();
     st.profiles.retain(|p| p.id != id);
+    st.mark_connected(&id, false);
     if st.active.as_deref() == Some(&id) {
-        st.active = st.profiles.first().map(|p| p.id.clone());
+        st.active = st.connected.first().cloned().or_else(|| st.profiles.first().map(|p| p.id.clone()));
     }
     st.save().map_err(|e| e.to_string())
 }
@@ -275,44 +294,53 @@ async fn snp_probe_pin(mut profile: Profile) -> CmdResult<snp::ProbeResult> {
     }
 }
 
-async fn disconnect_inner(core: &Core) {
-    if let Some(t) = core.tunnel.lock().await.take() {
-        t.task.abort();
+/// Disconnects one engine; the others stay connected.
+async fn disconnect_one(core: &Core, id: &str) {
+    if let Some(c) = core.conns.lock().await.remove(id) {
+        if let Some(t) = c.tunnel {
+            t.task.abort();
+        }
+        if let Some(client) = c.snp {
+            client.close().await;
+        }
     }
-    *core.proxy.upstream.write().await = None;
-    if let Some(b) = core.proxy.snp.write().await.take() {
-        b.client.close().await;
+    core.proxy.set_engine(id, None).await;
+}
+
+async fn disconnect_all(core: &Core) {
+    let ids: Vec<String> = core.conns.lock().await.keys().cloned().collect();
+    for id in ids {
+        disconnect_one(core, &id).await;
     }
-    *core.active.lock().await = None;
 }
 
 /// What a restarted SSH tunnel must update.
 #[derive(Clone)]
 enum TunnelTarget {
-    Http { proxy: Arc<ProxyShared>, token: String },
+    Http { proxy: Arc<ProxyShared>, id: String, token: String },
     Snp { client: snp::SnpClient },
 }
 
 impl TunnelTarget {
     async fn point_at(&self, local_port: u16) {
         match self {
-            TunnelTarget::Http { proxy, token } => {
-                *proxy.upstream.write().await = Some(Upstream { base: format!("http://127.0.0.1:{local_port}"), token: token.clone() });
+            TunnelTarget::Http { proxy, id, token } => {
+                proxy.repoint_http(id, Upstream { base: format!("http://127.0.0.1:{local_port}"), token: token.clone() }).await;
             }
             TunnelTarget::Snp { client } => client.set_endpoint("127.0.0.1", local_port),
         }
     }
 }
 
+/// Connects one engine *in addition to* any already connected (reconnecting it if it was).
 #[tauri::command]
 async fn connect(app: AppHandle, core: State<'_, Core>, id: String) -> CmdResult<ProxyInfo> {
     let store = ProfileStore::load();
     let profile = store.get(&id).cloned().ok_or("profile not found")?;
     let token = config::get_token(&id).ok_or("no API token stored for this server")?;
-    disconnect_inner(&core).await;
+    disconnect_one(&core, &id).await;
 
-    // Exactly one of `proxy.upstream` (HTTP transports) / `proxy.snp` is set, so an SNP
-    // profile can never be served by an HTTP fallback.
+    // An SNP profile gets an SNP backend only, so it can never be served by an HTTP fallback.
     let snp_client = if profile.transport == Transport::Snp {
         let (host, port) = match profile.mode {
             ConnectionMode::Direct => (profile.host.clone(), profile.snp_port),
@@ -326,57 +354,72 @@ async fn connect(app: AppHandle, core: State<'_, Core>, id: String) -> CmdResult
         Arc::new(SnpBackend { client: client.clone() })
     };
 
+    let mut tunnel_handle = None;
     match profile.mode {
         ConnectionMode::Direct => {
-            if let Some(client) = &snp_client {
-                *core.proxy.snp.write().await = Some(set_snp_backend(client));
-            } else {
-                *core.proxy.upstream.write().await = Some(Upstream { base: profile.direct_url(), token });
-            }
+            let backend = match &snp_client {
+                Some(client) => Backend::Snp(set_snp_backend(client)),
+                None => Backend::Http(Upstream { base: profile.direct_url(), token }),
+            };
+            core.proxy.set_engine(&id, Some(backend)).await;
         }
         ConnectionMode::Ssh => {
             let first = ssh::open_profile_tunnel(&profile).await?;
             let target = match &snp_client {
                 Some(client) => TunnelTarget::Snp { client: client.clone() },
-                None => TunnelTarget::Http { proxy: core.proxy.clone(), token: token.clone() },
+                None => TunnelTarget::Http { proxy: core.proxy.clone(), id: id.clone(), token: token.clone() },
             };
             target.point_at(first.local_port).await;
             if let Some(client) = &snp_client {
-                *core.proxy.snp.write().await = Some(set_snp_backend(client));
+                core.proxy.set_engine(&id, Some(Backend::Snp(set_snp_backend(client)))).await;
+            } else {
+                // `point_at` inserted the HTTP backend; run the primary bookkeeping.
+                let b = core.proxy.resolve(Some(&id)).await.1;
+                core.proxy.set_engine(&id, b).await;
             }
             let app2 = app.clone();
             let profile2 = profile.clone();
+            let pid = id.clone();
             // Supervise the tunnel: restart with backoff whenever ssh exits.
             let task = tokio::spawn(async move {
                 let mut tunnel = first;
                 let mut backoff = 1u64;
                 loop {
                     let _ = tunnel.child.wait().await;
-                    let _ = app2.emit("tunnel-status", serde_json::json!({"state": "reconnecting"}));
+                    let _ = app2.emit("tunnel-status", serde_json::json!({"state": "reconnecting", "profile_id": pid}));
                     loop {
                         tokio::time::sleep(Duration::from_secs(backoff)).await;
                         match ssh::open_profile_tunnel(&profile2).await {
                             Ok(t) => {
                                 target.point_at(t.local_port).await;
-                                let _ = app2.emit("tunnel-status", serde_json::json!({"state": "up"}));
+                                let _ = app2.emit("tunnel-status", serde_json::json!({"state": "up", "profile_id": pid}));
                                 tunnel = t;
                                 backoff = 1;
                                 break;
                             }
                             Err(e) => {
-                                let _ = app2.emit("tunnel-status", serde_json::json!({"state": "down", "error": e}));
+                                let _ = app2.emit("tunnel-status", serde_json::json!({"state": "down", "error": e, "profile_id": pid}));
                                 backoff = (backoff * 2).min(30);
                             }
                         }
                     }
                 }
             });
-            *core.tunnel.lock().await = Some(TunnelHandle { task });
+            tunnel_handle = Some(TunnelHandle { task });
         }
     }
-    *core.active.lock().await = Some(id.clone());
+    core.conns.lock().await.insert(
+        id.clone(),
+        Connection { tunnel: tunnel_handle, transport: profile.transport.as_str().to_string(), snp: snp_client.clone() },
+    );
     let mut st = ProfileStore::load();
-    st.active = Some(id.clone());
+    st.mark_connected(&id, true);
+    if st.active.as_ref().is_none_or(|a| !st.connected.contains(a)) {
+        st.active = Some(id.clone());
+    }
+    if let Some(primary) = st.active.clone() {
+        core.proxy.set_primary(&primary).await;
+    }
     let _ = st.save();
 
     // Connect eagerly so identity / authentication failures are reported right away.
@@ -391,31 +434,86 @@ async fn connect(app: AppHandle, core: State<'_, Core>, id: String) -> CmdResult
     Ok(proxy_info_inner(&core).await)
 }
 
+/// Disconnects one engine (`id`), or every engine when `id` is omitted (single-engine callers).
+/// `forget` also removes it from the auto-connect list (an explicit user action).
 #[tauri::command]
-async fn disconnect(core: State<'_, Core>) -> CmdResult<()> {
-    disconnect_inner(&core).await;
+async fn disconnect(core: State<'_, Core>, id: Option<String>, forget: Option<bool>) -> CmdResult<()> {
+    let ids = match &id {
+        Some(i) => vec![i.clone()],
+        None => core.conns.lock().await.keys().cloned().collect(),
+    };
+    match &id {
+        Some(i) => disconnect_one(&core, i).await,
+        None => disconnect_all(&core).await,
+    }
+    if forget.unwrap_or(true) {
+        let mut st = ProfileStore::load();
+        for i in &ids {
+            st.mark_connected(i, false);
+        }
+        if st.active.as_ref().is_some_and(|a| ids.contains(a)) && !st.connected.is_empty() {
+            st.active = st.connected.first().cloned();
+        }
+        let _ = st.save();
+    }
+    if let Some(p) = core.proxy.primary.read().await.clone() {
+        let mut st = ProfileStore::load();
+        if st.active.as_deref() != Some(&p) {
+            st.active = Some(p);
+            let _ = st.save();
+        }
+    }
     Ok(())
 }
 
+/// Chooses the engine that serves un-prefixed `/v1` requests (persisted as `active`).
+#[tauri::command]
+async fn set_primary(core: State<'_, Core>, id: String) -> CmdResult<ProxyInfo> {
+    let mut st = ProfileStore::load();
+    st.get(&id).ok_or("profile not found")?;
+    core.proxy.set_primary(&id).await;
+    st.active = Some(id);
+    st.save().map_err(|e| e.to_string())?;
+    Ok(proxy_info_inner(&core).await)
+}
+
+async fn snp_live(client: &snp::SnpClient) -> SnpLive {
+    SnpLive { status: client.status(), session: client.info().await.map(|i| (*i).clone()) }
+}
+
 async fn proxy_info_inner(core: &Core) -> ProxyInfo {
-    let snp_backend = core.proxy.snp.read().await.clone();
-    let profile_id = core.active.lock().await.clone();
-    let transport = match (&snp_backend, &profile_id) {
-        (Some(_), _) => Some("snp".to_string()),
-        (None, Some(id)) => ProfileStore::load().get(id).map(|p| p.transport.as_str().to_string()),
-        _ => None,
-    };
-    let snp = match &snp_backend {
-        Some(b) => Some(SnpLive { status: b.client.status(), session: b.client.info().await.map(|i| (*i).clone()) }),
-        None => None,
+    let primary = core.proxy.primary.read().await.clone();
+    let mut engines = Vec::new();
+    {
+        let conns = core.conns.lock().await;
+        let mut ids: Vec<&String> = conns.keys().collect();
+        ids.sort();
+        for id in ids {
+            let c = &conns[id];
+            let snp = match &c.snp {
+                Some(client) => Some(snp_live(client).await),
+                None => None,
+            };
+            engines.push(EngineLive {
+                profile_id: id.clone(),
+                primary: primary.as_deref() == Some(id.as_str()),
+                transport: c.transport.clone(),
+                snp,
+            });
+        }
+    }
+    let (transport, snp) = match engines.iter().find(|e| e.primary) {
+        Some(e) => (Some(e.transport.clone()), e.snp.clone()),
+        None => (None, None),
     };
     ProxyInfo {
         url: format!("http://127.0.0.1:{}", core.proxy_port),
         session: core.proxy.session.clone(),
-        connected: core.proxy.upstream.read().await.is_some() || snp_backend.is_some(),
-        profile_id,
+        connected: primary.is_some(),
+        profile_id: primary,
         transport,
         snp,
+        engines,
     }
 }
 
@@ -538,17 +636,21 @@ fn safe_name(name: &str) -> String {
 }
 
 #[tauri::command]
-async fn export_file(core: State<'_, Core>, file_id: String, dest: String) -> CmdResult<String> {
-    let up = core.proxy.upstream.read().await.clone();
-    let src = proxy::ensure_cached(&core.proxy, up.as_ref(), &file_id).await.map_err(|e| e.1)?;
+async fn export_file(core: State<'_, Core>, file_id: String, dest: String, engine: Option<String>) -> CmdResult<String> {
+    let src = proxy::ensure_cached_for(&core.proxy, engine.as_deref(), &file_id).await.map_err(|e| e.1)?;
     tokio::fs::copy(&src, &dest).await.map_err(|e| e.to_string())?;
     Ok(dest)
 }
 
 #[tauri::command]
-async fn save_to_library_folder(core: State<'_, Core>, file_id: String, kind: String, name: String) -> CmdResult<String> {
-    let up = core.proxy.upstream.read().await.clone();
-    let src = proxy::ensure_cached(&core.proxy, up.as_ref(), &file_id).await.map_err(|e| e.1)?;
+async fn save_to_library_folder(
+    core: State<'_, Core>,
+    file_id: String,
+    kind: String,
+    name: String,
+    engine: Option<String>,
+) -> CmdResult<String> {
+    let src = proxy::ensure_cached_for(&core.proxy, engine.as_deref(), &file_id).await.map_err(|e| e.1)?;
     let dir = default_export_dir(&kind);
     tokio::fs::create_dir_all(&dir).await.map_err(|e| e.to_string())?;
     let ext = src.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_else(|| "bin".into());
@@ -616,10 +718,17 @@ pub fn run() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info,tao=warn,wry=warn")).init();
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     let shared = ProxyShared::new(config::cache_dir());
+    // Media cached by a single-engine desktop belongs to the profile that was active then.
+    if let Some(active) = ProfileStore::load().active {
+        let moved = proxy::migrate_legacy_cache(&config::cache_dir(), &active);
+        if moved > 0 {
+            log::info!("moved {moved} cached media files into the cache of profile {active}");
+        }
+    }
     let port = rt.block_on(proxy::serve(shared.clone())).expect("start loopback proxy");
     tauri::async_runtime::set(rt.handle().clone());
     log::info!("loopback proxy on 127.0.0.1:{port}");
-    let core = Core { proxy: shared, proxy_port: port, tunnel: Mutex::new(None), active: Mutex::new(None) };
+    let core = Core { proxy: shared, proxy_port: port, conns: Mutex::new(HashMap::new()) };
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -630,7 +739,7 @@ pub fn run() {
             log::info!("page {:?}: {}", payload.event(), webview.url().map(|u| u.to_string()).unwrap_or_default());
         })
         .invoke_handler(tauri::generate_handler![
-            list_profiles, save_profile, delete_profile, test_connection, connect, disconnect, proxy_info,
+            list_profiles, save_profile, delete_profile, test_connection, connect, disconnect, set_primary, proxy_info,
             discover_servers, install_engine, export_file, save_to_library_folder, write_text_file,
             read_text_file, snp_probe_pin, cache_info, clear_cache, app_info, frontend_log,
             agent::commands::agent_tool_defs, agent::commands::agent_call, agent::commands::agent_cancel,

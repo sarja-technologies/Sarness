@@ -1,4 +1,4 @@
-//! Usage: headless_proxy --out <file> [--profile <id>] [--transport snp|http] [--pin sha256:…] [--snp-port N] [--ssh-user U]
+//! Usage: headless_proxy --out <file> [--profile <id>]... (repeat to connect several engines; first is primary) [--transport snp|http] [--pin sha256:…] [--snp-port N] [--ssh-user U]
 #[tokio::main]
 async fn main() {
     env_logger::init();
