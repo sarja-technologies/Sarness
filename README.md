@@ -1,6 +1,6 @@
 # Sarness (Sarja Harness)
 
-Self-hosted AI workstation: an LLM chat/agent client, image and video generation, node-graph workflows and interactive experiments, driven from a native Linux desktop against a GPU host the operator controls.
+Self-hosted AI workstation: an LLM chat/agent client, image and video generation, node-graph workflows and interactive experiments, driven from a native Linux desktop against one or more GPU hosts the operator controls (x86-64 or ARM64, including the NVIDIA DGX Spark; see [docs/MULTI-SERVER.md](docs/MULTI-SERVER.md)).
 
 | Component | Version | Stack |
 |---|---|---|
@@ -13,7 +13,7 @@ Self-hosted AI workstation: an LLM chat/agent client, image and video generation
 desktop/   src/ Svelte UI · src-tauri/ Rust core (loopback proxy, SNP client, SSH tunnels, keyring, installer, local agent)
 engine/    sarness_engine/ package (api, chat, search, snp, jobs, models, runtime, workflow, experiments) · tests/
 scripts/   install-engine.sh · package-engine.sh · setup-dev.sh · dev.sh · test.sh · build.sh
-docs/      SNP.md · SNP-OPS.md · API.md · DEPLOYMENT.md · ARCHITECTURE.md · WORKFLOW_FORMAT.md · MODELS.md · EXPERIMENTS.md · LOCAL_AGENT.md · DEVELOPMENT.md · WINDOWS-WSL2.md
+docs/      SNP.md · SNP-OPS.md · API.md · DEPLOYMENT.md · MULTI-SERVER.md · ARCHITECTURE.md · WORKFLOW_FORMAT.md · MODELS.md · EXPERIMENTS.md · LOCAL_AGENT.md · DEVELOPMENT.md · WINDOWS-WSL2.md
 ```
 
 ## Interfaces between the components

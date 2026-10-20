@@ -4,12 +4,14 @@ modulation, multi-repository downloads and hiding models that are still download
 import json
 
 import pytest
-import torch
-from torch import nn
 
 from sarness_engine.db import Database
 from sarness_engine.models import downloads as dl
-from sarness_engine.runtime import fp8
+
+torch = pytest.importorskip("torch")
+from torch import nn  # noqa: E402
+
+from sarness_engine.runtime import fp8  # noqa: E402
 
 
 def test_fp8_linear_matches_full_precision():
