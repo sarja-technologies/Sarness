@@ -258,6 +258,66 @@ CATALOG: list[dict[str, Any]] = [
         "license": "LTX-2 Community License",
         "tags": ["128gb", "audio"],
     },
+    {
+        "id": "wan2.2-t2v-a14b",
+        "name": "Wan 2.2 T2V A14B",
+        "category": "video", "family": "wan", "format": "diffusers",
+        "repo": "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+        "files": ["model_index.json", "scheduler/*", "text_encoder/*", "tokenizer/*", "transformer/*", "transformer_2/*",
+                  "vae/*"],
+        "size_gb": 126.2,
+        # Two 14B experts (high- and low-noise); stored in bf16, held in FP8 on unified memory.
+        "vram_mb": 72000, "vram_offload_mb": 72000,
+        "description": "Wan's large text-to-video model: two 14B experts, the most realistic open Wan. Needs a "
+                       "large-memory server (DGX Spark); several minutes per clip.",
+        "defaults": {"steps": 40, "guidance": 4.0, "width": 1280, "height": 720, "frames": 81, "fps": 16, "flow_shift": 12.0},
+        "limits": {"steps": [4, 60], "guidance": [1, 10], "frames": [5, 121], "frame_step": 4, "fps": [12, 24],
+                   "resolutions": [[1280, 720], [720, 1280], [832, 480], [480, 832]], "multiple": 16},
+        "capabilities": {"modes": ["t2v"], "negative_prompt": True, "start_frame": False, "end_frame": False,
+                         "motion": [], "lora": False},
+        "license": "Apache-2.0",
+        "tags": ["128gb", "realistic"],
+    },
+    {
+        "id": "wan2.2-i2v-a14b",
+        "name": "Wan 2.2 I2V A14B",
+        "category": "video", "family": "wan", "format": "diffusers",
+        "repo": "Wan-AI/Wan2.2-I2V-A14B-Diffusers",
+        "files": ["model_index.json", "scheduler/*", "text_encoder/*", "tokenizer/*", "transformer/*", "transformer_2/*",
+                  "vae/*"],
+        "size_gb": 126.2,
+        "vram_mb": 72000, "vram_offload_mb": 72000,
+        "description": "Wan's large image-to-video model: animates a start frame with realistic motion. Needs a "
+                       "large-memory server (DGX Spark).",
+        "defaults": {"steps": 40, "guidance": 3.5, "width": 1280, "height": 720, "frames": 81, "fps": 16, "flow_shift": 5.0},
+        "limits": {"steps": [4, 60], "guidance": [1, 10], "frames": [5, 121], "frame_step": 4, "fps": [12, 24],
+                   "resolutions": [[1280, 720], [720, 1280], [832, 480], [480, 832]], "multiple": 16},
+        "capabilities": {"modes": ["i2v"], "negative_prompt": True, "start_frame": True, "end_frame": False,
+                         "motion": [], "lora": False},
+        "license": "Apache-2.0",
+        "tags": ["128gb", "realistic"],
+    },
+    {
+        "id": "minimax-h3",
+        "name": "MiniMax H3 (video + audio)",
+        "category": "video", "family": "minimaxh3", "format": "diffusers",
+        "repo": "MiniMaxAI/MiniMax-H3",
+        # Official bf16 weights for the base model (text, first/last-frame to video with stereo audio). The
+        # reference-mode transformer (transformer_ref/) and the single-file FL2VA/Ref2VA copies are not fetched.
+        "files": ["model_index.json", "modular_model_index.json", "LICENSE", "scheduler/*", "audio_scheduler/*",
+                  "processor/*", "tokenizer/*", "text_encoder/*", "transformer/*", "vae/*", "audio_vae/*"],
+        "size_gb": 144.0,
+        "vram_mb": 110000, "vram_offload_mb": 110000,
+        "description": "MiniMax's omni-modal video model with native stereo audio, 768p, 4–15 s. Very large: the "
+                       "text encoder and transformer are loaded in turn on a DGX Spark.",
+        "defaults": {"steps": 40, "guidance": 5.0, "width": 1360, "height": 768, "frames": 121, "fps": 24},
+        "limits": {"steps": [8, 60], "guidance": [1, 10], "frames": [97, 361], "frame_step": 8, "fps": [24, 24],
+                   "resolutions": [[1360, 768], [768, 1360], [1024, 1024]], "multiple": 16},
+        "capabilities": {"modes": ["t2v", "i2v"], "negative_prompt": True, "start_frame": True, "end_frame": True,
+                         "motion": [], "lora": False, "audio": True},
+        "license": "MiniMax H3 Community License",
+        "tags": ["128gb", "audio", "realistic"],
+    },
     # ------------------------------------------------------------- Upscalers
     {
         "id": "realesrgan-x4plus",
@@ -314,7 +374,7 @@ HARDWARE_PRESETS: list[dict[str, Any]] = [
     {
         "id": "128gb-unified", "name": "DGX Spark (GB10, 128 GB unified memory)", "vram_mb": 124000,
         "recommended": ["gpt-oss-120b", "qwen3.8-flash-next", "qwen3-coder-next", "qwen3.6-35b-a3b", "qwen-image-2.1",
-                        "ltx-2.3", "wan2.2-ti2v-5b"],
+                        "ltx-2.3", "wan2.2-ti2v-5b", "wan2.2-t2v-a14b", "wan2.2-i2v-a14b", "minimax-h3"],
         "notes": "Memory is shared by the CPU and GPU, so offload does not save memory. One very large model at a "
                  "time: Flash Next or LTX-2.3 need most of the machine; GPT-OSS 120B fits beside Qwen-Image.",
     },
