@@ -117,6 +117,13 @@ MIGRATIONS: list[str] = [
     );
     CREATE INDEX experiment_documents_exp ON experiment_documents(experiment_id, updated_at DESC);
     """,
+    # 3 — idempotent job submission: a desktop retrying after a network interruption sends the
+    # same client key and gets the original job back instead of a duplicate. Older engines skip
+    # this version and ignore the column, so rolling back stays safe.
+    """
+    ALTER TABLE jobs ADD COLUMN client_key TEXT;
+    CREATE UNIQUE INDEX jobs_client_key ON jobs(client_key) WHERE client_key IS NOT NULL;
+    """,
 ]
 
 JSON_COLUMNS = {

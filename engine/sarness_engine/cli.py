@@ -130,13 +130,16 @@ def cmd_install_llama(args) -> int:
     last = [-1]
 
     def progress(done, total):
+        if total < 100:  # source build: steps, not bytes
+            print(f"  step {done}/{total}", flush=True)
+            return
         pct = int(done * 100 / total) if total else 0
         if pct != last[0] and pct % 5 == 0:
             last[0] = pct
             print(f"  {pct}% ({done / 1e6:.0f}/{total / 1e6:.0f} MB)", flush=True)
 
     print(f"Installing llama.cpp ({args.variant or rt.choose_variant()})…")
-    version = rt.install(progress, args.variant)
+    version = rt.install(progress, args.variant, getattr(args, "ref", None))
     print(f"Installed llama.cpp {version} at {rt.binary()}")
     return 0
 
@@ -198,7 +201,9 @@ def main(argv: list[str] | None = None) -> int:
     s.set_defaults(fn=cmd_snp_identity)
 
     s = sub.add_parser("install-llama", help="download the llama.cpp server runtime")
-    s.add_argument("--variant", choices=["cuda-12.8", "vulkan", "cpu"])
+    s.add_argument("--variant", choices=["cuda-12.8", "vulkan", "cpu", "cuda-src", "cpu-src"],
+                   help="prebuilt x86-64 release, or *-src to build from source (default: auto)")
+    s.add_argument("--ref", help="llama.cpp release tag for source builds (default: latest)")
     s.set_defaults(fn=cmd_install_llama)
 
     s = sub.add_parser("doctor", help="print environment diagnostics")

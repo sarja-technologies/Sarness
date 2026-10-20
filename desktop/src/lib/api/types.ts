@@ -22,6 +22,9 @@ export interface GpuInfo {
   power_limit_w?: number | null;
   driver_version?: string;
   cuda_driver_version?: string | null;
+  /** The GPU shares system memory (DGX Spark GB10); memory figures are system memory. */
+  unified_memory?: boolean;
+  compute_capability?: string | null;
 }
 
 export interface SystemInfo {
@@ -29,6 +32,8 @@ export interface SystemInfo {
   hardware: {
     hostname: string;
     os: string;
+    /** x86_64 or aarch64 (engines from 0.5). */
+    arch?: string;
     distro: string;
     python: string;
     cpu: { name: string; cores_physical: number; cores_logical: number; utilization_pct: number; load_avg: number[] };
@@ -131,6 +136,8 @@ export interface InstalledModel {
   quantization?: string;
   loaded?: boolean;
   meta?: Record<string, unknown>;
+  /** Server profile id hosting the model (set by the desktop). */
+  engine?: string;
 }
 
 export interface Download {
@@ -147,6 +154,8 @@ export interface Download {
   error: string | null;
   speed_bps?: number;
   created_at: number;
+  /** Server profile id downloading it (set by the desktop). */
+  engine?: string;
 }
 
 export interface CatalogQuant {
@@ -255,6 +264,10 @@ export interface Job {
   queue_position?: number | null;
   waiting_reason?: string | null;
   generations?: Generation[];
+  /** Idempotency key the desktop sent with the submission. */
+  client_key?: string | null;
+  /** Server profile id running the job (set by the desktop). */
+  engine?: string;
 }
 
 export interface Generation {
@@ -286,6 +299,8 @@ export interface Generation {
   path_on_server?: string;
   deleted_at: number | null;
   created_at: number;
+  /** Server profile id that produced and stores it (set by the desktop). */
+  engine?: string;
 }
 
 export interface Page<T> {
@@ -450,6 +465,8 @@ export interface ChatModel {
   vram_mb?: number | null;
   size?: number | null;
   local: boolean;
+  /** Server profile id hosting the model (set by the desktop). */
+  engine?: string;
 }
 
 export interface Attachment {
@@ -572,4 +589,58 @@ export interface EngineEvent<T = any> {
   type: string;
   ts?: number;
   data: T;
+  /** Server profile id of the engine that sent the event (set by the desktop). */
+  engine?: string;
+}
+
+/** A model as an engine advertises it in its capabilities document. */
+export interface CapabilityModel {
+  id: string;
+  name: string;
+  category: ModelCategory | null;
+  family: string | null;
+  runtime: string;
+  /** Workloads: chat, code, vision, reasoning, image, video, upscale. */
+  kinds: string[];
+  modes: string[];
+  quantization: string | null;
+  size_bytes: number | null;
+  memory_mb: number | null;
+  supported: boolean;
+  loaded: boolean;
+  chat_ref: string | null;
+}
+
+/** `GET /v1/capabilities`: identity, hardware, models and load of one engine. */
+export interface Capabilities {
+  server_id: string;
+  engine_version: string;
+  api_version: string;
+  hostname: string;
+  arch: string;
+  os: string;
+  cpu: string;
+  gpu: {
+    name: string;
+    compute_capability: string | null;
+    unified_memory: boolean;
+    memory_total_mb: number;
+    memory_free_mb: number;
+    utilization_pct: number | null;
+    driver: string | null;
+    cuda: string | null;
+  } | null;
+  memory: { total_mb: number; used_mb: number; available_mb: number };
+  storage_free_gb: number;
+  backends: string[];
+  experiments: string[];
+  chat_endpoints: { id: string; name: string }[];
+  models: CapabilityModel[];
+  llm: { state: string; model_id: string | null; active_streams: number };
+  jobs: { running: number; queued: number; concurrency: number; queue_soft_limit: number; busy_reason: string | null };
+  features: string[];
+  health: { status: 'ok' | 'degraded'; issues: string[] };
+  generated_at: number;
+  /** Built by the desktop from older endpoints (engine without `/v1/capabilities`). */
+  derived?: boolean;
 }

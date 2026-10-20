@@ -67,17 +67,19 @@ class WorkerSupervisor:
 
     def stop(self, timeout: float = 10.0) -> None:
         with self._lock:
-            if not self._proc:
+            # A local reference: the reader thread clears self._proc as soon as the worker exits.
+            proc = self._proc
+            if not proc:
                 return
             self._expected_exit = True
             try:
                 self._conn.send({"type": "shutdown"})
             except Exception:
                 pass
-            self._proc.join(timeout)
-            if self._proc.is_alive():
-                self._proc.kill()
-                self._proc.join(5)
+            proc.join(timeout)
+            if proc.is_alive():
+                proc.kill()
+                proc.join(5)
             self._proc = None
             self.info = {}
             self.last_status = {}
@@ -160,9 +162,10 @@ class WorkerSupervisor:
                 log.exception("error handling worker message %s", t)
         proc.join(2)
         code = proc.exitcode
-        if self._proc is not None and self._proc is not proc:
-            return  # a newer worker has already taken over
-        self._proc = None
+        with self._lock:
+            if self._proc is not None and self._proc is not proc:
+                return  # a newer worker has already taken over
+            self._proc = None
         job = self.current_job
         self.current_job = None
         self.info = {}

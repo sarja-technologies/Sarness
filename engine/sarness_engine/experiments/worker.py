@@ -276,7 +276,7 @@ def experiment_worker_main(conn, spec: dict[str, Any]) -> None:  # pragma: no co
     except ImportError:  # handlers that need no GPU (and the test suite) run without torch
         torch = None
     cuda = bool(torch and torch.cuda.is_available())
-    send({"type": "ready", "pid": os.getpid(), "torch": torch.__version__ if torch else None,
+    send({"type": "ready", "pid": os.getpid(), "torch": str(torch.__version__) if torch else None,
           "cuda": torch.version.cuda if torch else None, "device": torch.cuda.get_device_name(0) if cuda else "cpu"})
     wlog.info("worker ready (torch %s)", torch.__version__ if torch else "not installed")
     while not stop.is_set():

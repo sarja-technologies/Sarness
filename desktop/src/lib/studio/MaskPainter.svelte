@@ -1,6 +1,6 @@
 <script lang="ts">
   import { Brush, Eraser, RotateCcw } from '@lucide/svelte';
-  import { api } from '../api/client';
+  import { apiFor } from '../api/client';
   import { mediaUrl } from '../api/transport';
   import { toastError } from '../stores/toast.svelte';
   import Button from '../ui/Button.svelte';
@@ -9,7 +9,9 @@
   import Slider from '../ui/Slider.svelte';
 
   /** Paint a mask over the reference image; white = area to regenerate. */
-  let { open = $bindable(), imageId, maskId = $bindable() }: { open: boolean; imageId: string; maskId: string | null } = $props();
+  let { open = $bindable(), imageId, maskId = $bindable(), files }: { open: boolean; imageId: string; maskId: string | null; files?: Record<string, string> } = $props();
+  // The mask is stored next to its image, on the same server.
+  const home = $derived(files?.[imageId] ?? null);
 
   let canvas: HTMLCanvasElement | undefined = $state();
   let img: HTMLImageElement | undefined = $state();
@@ -42,7 +44,7 @@
         }
         ctx.putImageData(data, 0, 0);
       };
-      m.src = mediaUrl(`/v1/files/${maskId}`);
+      m.src = mediaUrl(`/v1/files/${maskId}`, home);
     }
   }
 
@@ -98,7 +100,8 @@
       }
       o.putImageData(dst, 0, 0);
       const blob: Blob = await new Promise((res) => out.toBlob((b) => res(b!), 'image/png'));
-      const r = await api.upload(blob, 'mask.png');
+      const r = await apiFor(home).upload(blob, 'mask.png');
+      if (files && home) files[r.id] = home;
       maskId = r.id;
       open = false;
     } catch (e) {
@@ -116,7 +119,7 @@
     <Button size="sm" variant="ghost" onclick={() => { const c = canvas!.getContext('2d')!; c.clearRect(0, 0, canvas!.width, canvas!.height); }}><RotateCcw />Clear</Button>
   </div>
   <div class="paint">
-    <img bind:this={img} src={mediaUrl(`/v1/files/${imageId}`)} alt="" crossorigin="anonymous" onload={setup} />
+    <img bind:this={img} src={mediaUrl(`/v1/files/${imageId}`, home)} alt="" crossorigin="anonymous" onload={setup} />
     <canvas bind:this={canvas}
       onpointerdown={(e) => { drawing = true; last = null; (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); stroke(point(e)); }}
       onpointermove={(e) => drawing && stroke(point(e))}

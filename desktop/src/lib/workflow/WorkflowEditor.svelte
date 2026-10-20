@@ -9,10 +9,11 @@
     active: boolean;
     onrun: (g: Workflow) => Promise<Job>;
     onrebuild: () => Promise<void>;
+    engine?: string | null;
   }
-  let { kind, graph = $bindable(), active, onrun, onrebuild }: Props = $props();
+  let { kind, graph = $bindable(), active, onrun, onrebuild, engine = null }: Props = $props();
 </script>
 
 <SvelteFlowProvider>
-  <EditorInner {kind} bind:graph {active} {onrun} {onrebuild} />
+  <EditorInner {kind} bind:graph {active} {onrun} {onrebuild} {engine} />
 </SvelteFlowProvider>

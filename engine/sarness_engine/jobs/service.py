@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
+import sqlite3
 import time
 from typing import Any
 
@@ -97,7 +98,16 @@ class JobService:
 
     def submit(self, *, kind: str, simple: dict[str, Any] | None = None, workflow: dict[str, Any] | None = None,
                project_id: str | None = None, folder_id: str | None = None, title: str | None = None,
-               retry_of: str | None = None) -> dict[str, Any]:
+               retry_of: str | None = None, client_key: str | None = None) -> dict[str, Any]:
+        """``client_key`` makes submission idempotent: resubmitting with the same key returns the
+        job created by the first request (any status) instead of queueing a duplicate."""
+        if client_key is not None:
+            client_key = str(client_key)
+            if not 8 <= len(client_key) <= 128:
+                raise JobError("client_key must be 8-128 characters", status=400)
+            existing = self.db.one("SELECT id FROM jobs WHERE client_key = ?", [client_key])
+            if existing:
+                return self.get(existing["id"])
         graph = self.build_workflow(kind, simple, workflow)
         issues = wf.validate(graph, self.model_lookup)
         errors = [i.to_dict() for i in issues if i.level == "error"]
@@ -128,7 +138,16 @@ class JobService:
             "attempts": 0, "vram_estimate_mb": self._estimate(resolved), "retry_of": retry_of,
             "created_at": now(),
         }
-        self.db.insert("jobs", job)
+        if client_key is not None:
+            job["client_key"] = client_key
+        try:
+            self.db.insert("jobs", job)
+        except sqlite3.IntegrityError:
+            # A concurrent request with the same key won the race.
+            existing = self.db.one("SELECT id FROM jobs WHERE client_key = ?", [client_key])
+            if existing:
+                return self.get(existing["id"])
+            raise
         out = self.get(job["id"])
         self.bus.publish("job.created", self._public(out))
         return out

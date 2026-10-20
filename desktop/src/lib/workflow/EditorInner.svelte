@@ -5,7 +5,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
   import { onDestroy, tick, untrack } from 'svelte';
-  import { api, qs } from '../api/client';
+  import { apiFor, qs } from '../api/client';
   import { isTauri, mediaUrl } from '../api/transport';
   import type { Job, NodeSpec, SavedWorkflow, ValidationIssue, Workflow } from '../api/types';
   import { cancelJob, jobs, onGeneration } from '../stores/jobs.svelte';
@@ -32,8 +32,11 @@
     active: boolean;
     onrun: (g: Workflow) => Promise<Job>;
     onrebuild: () => Promise<void>;
+    /** Server whose node library, models and saved workflows the editor uses (null = primary). */
+    engine?: string | null;
   }
-  let { kind, graph = $bindable(), active, onrun, onrebuild }: Props = $props();
+  let { kind, graph = $bindable(), active, onrun, onrebuild, engine = null }: Props = $props();
+  const api = $derived(apiFor(engine));
 
   const flow = useSvelteFlow();
   const nodeTypes = { sarness: SarnessNode, reroute: RerouteNode, group: GroupNode } as any;
@@ -63,7 +66,7 @@
 
   // ------------------------------------------------------------ load / sync
   $effect(() => {
-    loadNodeLibrary().catch((e) => toastError(e, 'Could not load the node library'));
+    loadNodeLibrary(false, engine).catch((e) => toastError(e, 'Could not load the node library'));
   });
 
   $effect(() => {
@@ -382,7 +385,7 @@
   const unsubGen = onGeneration((g) => {
     if (g.job_id && g.job_id === jobId) {
       const nid = (g.metadata as any)?.node_id;
-      if (nid) outputs = { ...outputs, [nid]: mediaUrl(g.thumb_url) };
+      if (nid) outputs = { ...outputs, [nid]: mediaUrl(g.thumb_url, g.engine) };
     }
   });
   onDestroy(() => unsubGen());

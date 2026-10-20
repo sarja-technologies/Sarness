@@ -22,6 +22,8 @@ interface Prefs {
   reduceMotion: boolean;
   theme: 'light' | 'dark' | 'system';
   lastChatModel: string | null;
+  /** Server (profile id) that runs experiments; null = the one where they are ready. */
+  experimentsEngine: string | null;
 }
 
 const KEY = 'sarness.prefs.v1';
@@ -42,6 +44,7 @@ const defaults: Prefs = {
   reduceMotion: false,
   theme: 'light',
   lastChatModel: null,
+  experimentsEngine: null,
 };
 
 function load(): Prefs {

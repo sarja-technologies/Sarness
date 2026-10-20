@@ -1,15 +1,15 @@
 <script lang="ts">
   import { Dices } from '@lucide/svelte';
   import type { ParamSpec } from '../api/types';
-  import { byCategory } from '../stores/models.svelte';
-  import { api } from '../api/client';
+  import { byCategory, models as modelStore } from '../stores/models.svelte';
+  import { apiFor } from '../api/client';
   import { mediaUrl } from '../api/transport';
   import { toastError } from '../stores/toast.svelte';
 
   let { spec, value, onchange, disabled = false }: { spec: ParamSpec; value: unknown; onchange: (v: unknown) => void; disabled?: boolean } = $props();
 
   const models = $derived(spec.kind === 'model' && spec.model_category
-    ? byCategory(spec.model_category).filter((m) => !spec.model_family || spec.model_family.includes(m.family ?? ''))
+    ? byCategory(spec.model_category, true, modelStore.nodesEngine).filter((m) => !spec.model_family || spec.model_family.includes(m.family ?? ''))
     : []);
   const enumOptions = $derived((spec.options ?? []).map((o) => (typeof o === 'string' ? { value: o, label: o.replace(/_/g, ' ') } : o)));
 
@@ -27,7 +27,8 @@
     const f = (e.currentTarget as HTMLInputElement).files?.[0];
     if (!f) return;
     try {
-      const r = await api.upload(f, f.name);
+      // Files go to the server whose node library the editor shows: the one that runs the graph.
+      const r = await apiFor(modelStore.nodesEngine).upload(f, f.name);
       onchange(r.id);
     } catch (err) {
       toastError(err, 'Upload failed');
@@ -60,7 +61,7 @@
     </select>
   {:else if spec.kind === 'file'}
     <span class="file">
-      {#if value}<img src={mediaUrl(`/v1/files/${value}`)} alt="" />{/if}
+      {#if value}<img src={mediaUrl(`/v1/files/${value}`, modelStore.nodesEngine)} alt="" />{/if}
       <input type="file" accept={spec.file_accept === 'video' ? 'video/*' : 'image/*'} onchange={upload} />
     </span>
   {:else if spec.kind === 'text'}

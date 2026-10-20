@@ -1,10 +1,10 @@
 <script lang="ts">
   import { Clapperboard, FolderOpen, Image, ListTodo, MessagesSquare, Play, Plus, RotateCcw, Square, Trash2, Workflow } from '@lucide/svelte';
-  import { api, qs } from '../api/client';
+  import { apiFor, qs } from '../api/client';
   import { mediaUrl } from '../api/transport';
   import type { Conversation, Generation, Job, Page } from '../api/types';
   import SystemPanel from '../components/SystemPanel.svelte';
-  import { activeProfile, conn, onEvent, refreshSystem } from '../stores/connection.svelte';
+  import { activeProfile, conn, engineList, onEvent, profileName, refreshEngine } from '../stores/connection.svelte';
   import { cancelJob, jobs, onGeneration, recentJobs, retryJob } from '../stores/jobs.svelte';
   import { models } from '../stores/models.svelte';
   import { prefs, persistPrefs, type View } from '../stores/prefs.svelte';
@@ -24,23 +24,43 @@
   let convs = $state<Conversation[]>([]);
   let loaded = '';
 
+  const engines = $derived(engineList());
+  const multi = $derived(engines.length > 1);
+  const online = $derived(engines.filter((e) => e.state === 'online'));
+
+  // Recent work and conversations of every online server, newest first.
   $effect(() => {
-    const key = `${conn.state}:${conn.activeId}`;
-    if (conn.state === 'online' && loaded !== key) {
+    const key = online.map((e) => e.id).sort().join(',');
+    if (key && loaded !== key) {
       loaded = key;
-      api.get<Page<Generation>>(`/v1/generations${qs({ limit: 12 })}`).then((p) => (recent = p.items)).catch(() => {});
-      api.get<Conversation[]>('/v1/chat/conversations').then((c) => (convs = c.slice(0, 6))).catch(() => {});
+      Promise.allSettled(online.map((e) => apiFor(e.id).get<Page<Generation>>(`/v1/generations${qs({ limit: 12 })}`).then((p) => p.items.map((g) => ({ ...g, engine: e.id })))))
+        .then((rs) => (recent = rs.flatMap((r) => (r.status === 'fulfilled' ? r.value : [])).sort((a, b) => b.created_at - a.created_at).slice(0, 12)));
+      Promise.allSettled(online.map((e) => apiFor(e.id).get<Conversation[]>('/v1/chat/conversations').then((cs) => cs.map((c) => ({ ...c, engine: e.id })))))
+        .then((rs) => (convs = rs.flatMap((r) => (r.status === 'fulfilled' ? r.value : [])).sort((a, b) => b.updated_at - a.updated_at).slice(0, 6)));
     }
   });
   onGeneration((g) => (recent = [g, ...recent].slice(0, 12)));
-  onEvent('connection.restored', () => refreshSystem());
+  onEvent('connection.restored', (e) => e.engine && refreshEngine(e.engine));
 
   // Refresh slow-changing system info periodically while visible.
   $effect(() => {
     if (prefs.view !== 'system') return;
-    const t = setInterval(() => conn.state === 'online' && refreshSystem(), 20000);
+    const t = setInterval(() => { for (const e of engineList()) if (e.state === 'online') void refreshEngine(e.id); }, 20000);
     return () => clearInterval(t);
   });
+
+  async function clearFinished() {
+    const done = ['completed', 'failed', 'cancelled'];
+    const servers = new Set(Object.values(jobs.byId).filter((j) => done.includes(j.status)).map((j) => j.engine ?? conn.activeId));
+    for (const id of servers) {
+      try {
+        await apiFor(id).del('/v1/jobs/finished');
+        for (const j of Object.values(jobs.byId)) if (done.includes(j.status) && (j.engine ?? conn.activeId) === id) delete jobs.byId[j.id];
+      } catch (e) {
+        toastError(e, `Could not clear finished jobs on ${profileName(id)}`);
+      }
+    }
+  }
 
   function go(v: View) {
     prefs.view = v;
@@ -76,7 +96,9 @@
       <div>
         <h1>{greeting}</h1>
         <p class="muted">
-          {#if conn.state === 'online' && conn.system}
+          {#if multi}
+            Connected to {#each engines as e, i (e.id)}{i ? ', ' : ''}<b>{profileName(e.id)}</b>{#if e.state !== 'online'} ({e.state}){/if}{/each} · {new Set(models.installed.map((m) => m.id)).size} models across servers
+          {:else if conn.state === 'online' && conn.system}
             Connected to <b>{activeProfile()?.name}</b> · {conn.system.hardware.hostname} · {models.installed.length} models installed
           {:else if conn.state === 'offline'}
             The server is offline. Sarness keeps retrying; cached results remain viewable.
@@ -94,18 +116,26 @@
       <button class="qa" onclick={() => open('image')}><span class="qi"><Workflow /></span><span><b>Build a workflow</b><small>Switch an image session to Advanced</small></span></button>
     </div>
 
-    {#if conn.system}
-      <section>
-        <div class="sh"><h2>Server</h2></div>
-        <SystemPanel system={conn.system} stats={conn.stats} />
-      </section>
-    {/if}
+    {#each engines as e (e.id)}
+      {#if e.system}
+        <section>
+          <div class="sh"><div class="sht"><h2>{multi ? profileName(e.id) : 'Server'}</h2>
+            {#if multi}
+              {#if e.id === conn.activeId}<Badge tone="accent">primary</Badge>{/if}
+              <Badge tone={e.state === 'online' ? 'ok' : 'warn'} dot>{e.state}</Badge>
+              {#if e.caps?.arch}<span class="faint small">{e.caps.arch}</span>{/if}
+            {/if}
+          </div></div>
+          <SystemPanel system={e.system} stats={e.stats} />
+        </section>
+      {/if}
+    {/each}
 
     <div class="cols">
       <section class="queue">
         <div class="sh"><h2>Queue</h2>
           {#if queue.some((j) => ['completed', 'failed', 'cancelled'].includes(j.status))}
-            <IconButton label="Clear finished jobs" size="sm" onclick={async () => { await api.del('/v1/jobs/finished'); for (const j of Object.values(jobs.byId)) if (['completed','failed','cancelled'].includes(j.status)) delete jobs.byId[j.id]; }}><Trash2 /></IconButton>
+            <IconButton label="Clear finished jobs" size="sm" onclick={clearFinished}><Trash2 /></IconButton>
           {/if}
         </div>
         {#if !queue.length}
@@ -120,10 +150,11 @@
                 <div class="jt truncate">{j.title}</div>
                 <div class="js">
                   <Badge tone={statusTone(j.status)}>{j.status}</Badge>
+                  {#if multi}<span class="srv">{profileName(j.engine ?? conn.activeId)}</span>{/if}
                   {#if j.status === 'queued' && j.queue_position}<span>#{j.queue_position} in queue</span>{/if}
                   {#if j.waiting_reason}<span>{j.waiting_reason}</span>{/if}
                   {#if j.status === 'running'}<span class="truncate">{p?.text ?? j.progress_text}</span>{/if}
-                  {#if j.status === 'completed' && j.result}<span>{duration(j.result.elapsed_s)} · peak {(j.result.peak_vram_mb / 1024).toFixed(1)} GB VRAM</span>{/if}
+                  {#if j.status === 'completed' && j.result}<span>{duration(j.result.elapsed_s)} · peak {(j.result.peak_vram_mb / 1024).toFixed(1)} GB {conn.engines[j.engine ?? '']?.caps?.gpu?.unified_memory ? 'memory' : 'VRAM'}</span>{/if}
                   {#if j.status === 'failed'}<span class="err truncate" title={j.error?.message}>{j.error?.message}</span>{/if}
                   <span class="faint">{ago(j.created_at)}</span>
                 </div>
@@ -145,7 +176,7 @@
           <div class="recent">
             {#each recent as g (g.id)}
               <button class="rthumb" onclick={() => go('library')} title={g.prompt ?? ''}>
-                <img src={mediaUrl(g.thumb_url)} alt="" loading="lazy" />
+                <img src={mediaUrl(g.thumb_url, g.engine)} alt="" loading="lazy" />
                 {#if g.type === 'video'}<span class="pl"><Play /></span>{/if}
               </button>
             {/each}
@@ -157,7 +188,7 @@
         <div class="sh" style="margin-top:22px"><h2>Conversations</h2><Button size="sm" variant="ghost" onclick={() => open('chat')}>Open chat</Button></div>
         <div class="convs">
           {#each convs as c (c.id)}
-            <button class="conv" onclick={() => { const s = sessionStore.list.find((x) => x.convId === c.id); if (s) { openSession(s.id); go('workspace'); } }}><MessagesSquare /><span class="truncate">{c.title}</span><span class="faint">{ago(c.updated_at)}</span></button>
+            <button class="conv" onclick={() => { const s = sessionStore.list.find((x) => x.convId === c.id); if (s) { openSession(s.id); go('workspace'); } }}><MessagesSquare /><span class="truncate">{c.title}</span>{#if multi}<span class="srv">{profileName((c as Conversation & { engine?: string }).engine)}</span>{/if}<span class="faint">{ago(c.updated_at)}</span></button>
           {/each}
           {#if !convs.length}<p class="faint small">No conversations yet.</p>{/if}
         </div>
@@ -177,6 +208,9 @@
 </div>
 
 <style>
+  .sht { display: flex; align-items: center; gap: 8px; }
+  .srv { font-size: var(--fs-xs); color: var(--text-2); white-space: nowrap; }
+  .small { font-size: var(--fs-xs); }
   .ws { height: 100%; overflow-y: auto; background: radial-gradient(70% 40% at 20% 0%, rgba(var(--accent-rgb), 0.08), transparent 70%); }
   .inner { max-width: 1480px; margin: 0 auto; padding: 30px 36px 48px; display: flex; flex-direction: column; gap: 26px; }
   header h1 { font-size: 28px; margin-bottom: 4px; }

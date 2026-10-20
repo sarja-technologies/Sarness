@@ -11,6 +11,7 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
 from .. import API_VERSION, __version__, hardware
+from ..runtime.llama import VARIANTS
 from .deps import AppState, require_auth
 
 router = APIRouter(prefix="/v1")
@@ -69,6 +70,15 @@ def system(st: AppState = Depends(require_auth)) -> dict[str, Any]:
         "models": {"installed": len(models), "by_category": _count(models, "category")},
         "health": {"status": "degraded" if issues else "ok", "issues": issues},
     }
+
+
+@router.get("/capabilities")
+def capabilities(st: AppState = Depends(require_auth)) -> dict[str, Any]:
+    """Identity, hardware, free memory, backends, models with their workloads, and load:
+    everything a multi-server desktop needs to route requests to this engine."""
+    from ..capabilities import capabilities as build
+
+    return build(st)
 
 
 def _cuda_tag(torch_v: str | None) -> str | None:
@@ -143,8 +153,8 @@ def install_llama(body: dict[str, Any] = Body(default={}), st: AppState = Depend
     if _install_state["running"]:
         return _install_state
     variant = body.get("variant")
-    if variant not in (None, "cuda-12.8", "vulkan", "cpu"):
-        raise HTTPException(400, "variant must be cuda-12.8, vulkan or cpu")
+    if variant is not None and variant not in VARIANTS:
+        raise HTTPException(400, f"variant must be one of {', '.join(VARIANTS)}")
 
     def progress(done, total):
         _install_state.update(done=done, total=total)

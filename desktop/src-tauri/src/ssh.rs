@@ -194,6 +194,7 @@ mod tests {
         let mut p = Profile {
             id: "p".into(), name: "n".into(), host: "127.0.0.1".into(), port: 8742, scheme: "http".into(), mode: ConnectionMode::Ssh,
             ssh: Some(o), has_token: false, transport: Transport::Snp, snp_port: 8744, snp_pin: None, snp_server_name: None,
+            preferred_tasks: vec![],
         };
         assert_eq!(p.active_port(), 8744);
         p.transport = Transport::Https;

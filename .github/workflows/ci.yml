@@ -22,6 +22,26 @@ jobs:
         working-directory: engine
         run: python -m pytest -q -m "not gpu"
 
+  # The engine also runs on ARM64 servers (NVIDIA DGX Spark / GB10); same suite on an ARM64 runner.
+  engine-arm64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install engine with the CPU inference stack (no GPU/models required)
+        working-directory: engine
+        run: |
+          python -m pip install --upgrade pip
+          # torchvision must come from the same index: PyPI's build does not match the CPU torch
+          # ("operator torchvision::nms does not exist") and transformers/diffusers imports then fail.
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[dev,inference]"
+      - name: pytest
+        working-directory: engine
+        run: python -m pytest -q -m "not gpu"
+
   desktop:
     runs-on: ubuntu-22.04
     steps:

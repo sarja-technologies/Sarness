@@ -13,6 +13,7 @@ Runs only inside the GPU worker process. Placement policy ("memory mode"):
 from __future__ import annotations
 
 import gc
+import json
 import logging
 import re
 import time
@@ -84,6 +85,11 @@ def device() -> torch.device:
 def free_vram_mb() -> int:
     if not cuda_available():
         return 0
+    if unified_memory():
+        # cudaMemGetInfo ignores reclaimable page cache; what the GPU can still allocate is MemAvailable.
+        import psutil
+
+        return psutil.virtual_memory().available // (1024 * 1024)
     free, _total = torch.cuda.mem_get_info()
     return free // (1024 * 1024)
 
@@ -92,6 +98,57 @@ def total_vram_mb() -> int:
     if not cuda_available():
         return 0
     return torch.cuda.mem_get_info()[1] // (1024 * 1024)
+
+
+_UNIFIED: bool | None = None
+
+
+def unified_memory() -> bool:
+    """True on GPUs that allocate from system RAM (DGX Spark GB10, Jetson). There, CPU offload
+    saves no memory and only slows generation down, and cudaMemGetInfo under-reports what can be
+    allocated (it ignores reclaimable page cache), so pipelines always stay resident."""
+    global _UNIFIED
+    if _UNIFIED is None:
+        try:
+            from ..hardware import gpus
+
+            g = gpus()
+            _UNIFIED = bool(g and g[0].get("unified_memory"))
+        except Exception:  # pragma: no cover
+            _UNIFIED = False
+    return _UNIFIED
+
+
+def fast_load() -> dict[str, Any]:
+    """from_pretrained kwargs that read weights in one pass instead of through mmap. On unified-memory
+    GPUs (GB10) moving mmap'd safetensors to the GPU faults pages in one by one on a single CPU core:
+    a 14 GB transformer took 79 s that way and 7 s read up front."""
+    return {"disable_mmap": True} if unified_memory() else {}
+
+
+def load_pipeline(cls: Any, path: str | Path, dtype: torch.dtype, **kwargs: Any) -> Any:
+    """cls.from_pretrained with fast loading for every component. diffusers forwards disable_mmap only
+    to its own models, so transformers components (text encoders) are loaded here and passed in."""
+    fast = fast_load()
+    path = Path(path)
+    if fast and (path / "model_index.json").is_file():
+        import transformers
+
+        variant = kwargs.get("variant")
+        for name, spec in json.loads((path / "model_index.json").read_text()).items():
+            if name in kwargs or not isinstance(spec, list) or len(spec) != 2 or spec[0] != "transformers":
+                continue
+            mcls = getattr(transformers, spec[1] or "", None)
+            if not (isinstance(mcls, type) and issubclass(mcls, transformers.PreTrainedModel)):
+                continue  # tokenizers, processors
+            v = variant if variant and _has(path / name, f"*.{variant}.safetensors") else None
+            kwargs[name] = mcls.from_pretrained(str(path), subfolder=name, dtype=dtype, variant=v, **fast)
+    return cls.from_pretrained(str(path), dtype=dtype, **fast, **kwargs)
+
+
+# Families whose diffusers pipeline is called end to end (prompt → images/frames) instead of
+# through Sarness' encode / sample / decode nodes.
+NATIVE_PIPELINES = {"qwenimage21": "QwenImage21Pipeline", "ltx2": "LTX2Pipeline"}
 
 
 def _has(path: Path, pattern: str) -> bool:
@@ -127,20 +184,22 @@ class ModelManager:
         log.info("unloading %s", key)
         obj = item.obj[0] if isinstance(item.obj, tuple) else item.obj
         # Move weights off the GPU explicitly: this frees VRAM even if stray
-        # references (caches, tracebacks) keep the Python objects alive.
+        # references (caches, tracebacks) keep the Python objects alive. With unified memory a copy to
+        # the CPU would land in the same RAM (briefly doubling it), so the weights are dropped instead.
+        off = "meta" if unified_memory() else "cpu"
         try:
             if hasattr(obj, "remove_all_hooks"):
                 obj.remove_all_hooks()
             if hasattr(obj, "components"):
                 for comp in obj.components.values():
                     if isinstance(comp, torch.nn.Module):
-                        comp.to("cpu")
+                        comp.to(off)
                 for sub in (obj.__dict__.get("_sarness_denoise") or {}).values():
                     sub.__dict__.pop("_sarness_denoise", None)
             elif hasattr(obj, "model") and isinstance(getattr(obj, "model"), torch.nn.Module):
-                obj.model.to("cpu")  # spandrel descriptor
+                obj.model.to(off)  # spandrel descriptor
             elif isinstance(obj, torch.nn.Module):
-                obj.to("cpu")
+                obj.to(off)
         except Exception as exc:  # pragma: no cover - best effort
             log.warning("error while unloading %s: %s", key, exc)
         del obj, item
@@ -165,9 +224,18 @@ class ModelManager:
             if key not in keep:
                 self.evict(key)
 
+    def _room_before_load(self, need_mb: int, key: str) -> None:
+        """With unified memory, a model loads straight into the memory the GPU uses, so cached models
+        are evicted first; otherwise the load itself could exhaust memory."""
+        if unified_memory():
+            self.make_room(need_mb, keep={key})
+
     def _choose_mode(self, requested: str, need_gpu_mb: int, keep: set[str]) -> str:
         if not cuda_available():
             return "cpu"
+        if requested == "auto" and unified_memory():
+            self.make_room(need_gpu_mb, keep)
+            return "gpu"
         if requested in ("gpu", "offload", "sequential"):
             if requested == "gpu":
                 self.make_room(need_gpu_mb, keep)
@@ -192,22 +260,25 @@ class ModelManager:
         if cached is not None:
             pipe, mode = cached
             return ModelHandle(key, info["id"], family, info, pipe, mode)
+        if family in NATIVE_PIPELINES:
+            return self._native_pipeline("image", info, memory_mode)
 
         from diffusers import StableDiffusionPipeline, StableDiffusionXLPipeline
 
         path = Path(info["path"])
         dtype = torch.float16 if cuda_available() else torch.float32
+        est = int(info.get("vram_mb") or 8000)
+        self._room_before_load(est, key)
         t0 = time.perf_counter()
         cls = StableDiffusionXLPipeline if family == "sdxl" else StableDiffusionPipeline
         if path.is_file():
             pipe = cls.from_single_file(str(path), dtype=dtype)
         else:
             variant = "fp16" if _has(path, "unet/*.fp16.safetensors") else None
-            pipe = cls.from_pretrained(str(path), dtype=dtype, variant=variant, use_safetensors=True)
+            pipe = load_pipeline(cls, path, dtype, variant=variant, use_safetensors=True)
         pipe.set_progress_bar_config(disable=True)
         pipe._sarness_default_scheduler = pipe.scheduler
         pipe._sarness_adapters = {}
-        est = int(info.get("vram_mb") or 8000)
         mode = self._choose_mode(memory_mode, est, keep={key})
         self._place(pipe, mode)
         log.info("loaded %s (%s) in %.1fs, mode=%s", info["id"], family, time.perf_counter() - t0, mode)
@@ -224,7 +295,7 @@ class ModelManager:
         path = Path(info["path"])
         dtype = torch.float16 if cuda_available() else torch.float32
         vae = (AutoencoderKL.from_single_file(str(path), dtype=dtype) if path.is_file()
-               else AutoencoderKL.from_pretrained(str(path), dtype=dtype))
+               else AutoencoderKL.from_pretrained(str(path), dtype=dtype, **fast_load()))
         vae.to(device())
         self._cache[key] = _Loaded(vae, int(info.get("vram_mb") or 400), "vae", "gpu")
         return vae
@@ -239,7 +310,8 @@ class ModelManager:
         path = Path(info["path"])
         dtype = torch.float16 if cuda_available() else torch.float32
         variant = "fp16" if _has(path, "*.fp16.safetensors") else None
-        cn = ControlNetModel.from_pretrained(str(path), dtype=dtype, variant=variant, use_safetensors=True)
+        cn = ControlNetModel.from_pretrained(str(path), dtype=dtype, variant=variant, use_safetensors=True,
+                                             **fast_load())
         self._cache[key] = _Loaded(cn, int(info.get("vram_mb") or 2500), "controlnet", "lazy")
         return cn
 
@@ -273,26 +345,46 @@ class ModelManager:
         if cached is not None:
             pipe, mode = cached
             return ModelHandle(key, info["id"], family, info, pipe, mode)
+        if family == "minimaxh3":
+            return self._minimax_h3(info)
+        if family in NATIVE_PIPELINES:
+            return self._native_pipeline("video", info, memory_mode)
         if family not in ("wan", "wan22-ti2v"):
             raise ValueError(f"unsupported video family {family}")
         from diffusers import AutoencoderKLWan, WanPipeline
         from transformers import UMT5EncoderModel
 
         path = str(info["path"])
+        est = int(info.get("vram_mb") or 9000)
+        self._room_before_load(est, key)
         t0 = time.perf_counter()
+        fast = fast_load()
+        # Wan 2.2 A14B has two ~57 GB experts (high noise, low noise). Each is stored in FP8 as soon as
+        # it has loaded and computed in bf16, which halves its memory and caps the load peak at one
+        # bf16 expert.
+        experts: dict[str, Any] = {}
+        if (Path(path) / "transformer_2").is_dir():
+            from diffusers import WanTransformer3DModel
+
+            for sub in ("transformer", "transformer_2"):
+                tr = WanTransformer3DModel.from_pretrained(path, subfolder=sub, dtype=torch.bfloat16, **fast)
+                tr.enable_layerwise_casting(storage_dtype=torch.float8_e4m3fn, compute_dtype=torch.bfloat16)
+                experts[sub] = tr
+                self.collect()
         # Text encoder: bf16 on CPU; streamed to the GPU block-by-block when encoding.
-        te = UMT5EncoderModel.from_pretrained(path, subfolder="text_encoder", dtype=torch.bfloat16)
-        vae = AutoencoderKLWan.from_pretrained(path, subfolder="vae", dtype=torch.float32)
-        pipe = WanPipeline.from_pretrained(path, vae=vae, text_encoder=te, dtype=torch.bfloat16)
+        te = UMT5EncoderModel.from_pretrained(path, subfolder="text_encoder", dtype=torch.bfloat16, **fast)
+        vae = AutoencoderKLWan.from_pretrained(path, subfolder="vae", dtype=torch.float32, **fast)
+        pipe = WanPipeline.from_pretrained(path, vae=vae, text_encoder=te, dtype=torch.bfloat16, **fast, **experts)
         pipe.set_progress_bar_config(disable=True)
         pipe._sarness_default_scheduler = pipe.scheduler
 
-        est = int(info.get("vram_mb") or 9000)
         te_bytes_mb = sum(p.numel() * p.element_size() for p in te.parameters()) // (1024 * 1024)
         tr_bytes_mb = sum(p.numel() * p.element_size() for p in pipe.transformer.parameters()) // (1024 * 1024)
         self.make_room(est, keep={key})
         free = free_vram_mb()
         mode = memory_mode
+        if mode == "auto" and unified_memory():
+            mode = "gpu"
         if mode == "auto":
             if free >= te_bytes_mb + est + self.headroom_mb:
                 mode = "gpu"
@@ -315,6 +407,49 @@ class ModelManager:
                     _stream_module(pipe.transformer, "leaf_level")
         log.info("loaded %s in %.1fs, mode=%s (text encoder %d MiB)", info["id"], time.perf_counter() - t0, mode, te_bytes_mb)
         self._cache[key] = _Loaded((pipe, mode), est, "video", mode)
+        return ModelHandle(key, info["id"], family, info, pipe, mode)
+
+
+    def _minimax_h3(self, info: dict[str, Any]) -> ModelHandle:
+        """MiniMax H3: FP8 transformer and conditioner, always fully resident (see runtime.minimax_h3)."""
+        from .minimax_h3 import load_pipeline as load_minimax_h3
+
+        key = f"video:{info['id']}"
+        est = int(info.get("vram_mb") or 70000)
+        if not cuda_available():
+            raise ValueError("MiniMax H3 needs an NVIDIA GPU")
+        if not unified_memory() and total_vram_mb() < est:
+            raise ValueError(f"MiniMax H3 needs about {est // 1024} GB of GPU memory; this GPU has {total_vram_mb() // 1024} GB")
+        self.make_room(est, keep={key})
+        t0 = time.perf_counter()
+        pipe = load_minimax_h3(info["path"], device())
+        log.info("loaded %s (minimaxh3) in %.1fs", info["id"], time.perf_counter() - t0)
+        self._cache[key] = _Loaded((pipe, "gpu"), est, "video", "gpu")
+        return ModelHandle(key, info["id"], "minimaxh3", info, pipe, "gpu")
+
+    def _native_pipeline(self, kind: str, info: dict[str, Any], memory_mode: str) -> ModelHandle:
+        """Loads a pipeline that runs end to end (Qwen-Image 2.1, LTX-2) in bf16."""
+        import diffusers
+
+        family = info["family"]
+        key = f"{kind}:{info['id']}"
+        cls = getattr(diffusers, NATIVE_PIPELINES[family], None)
+        if cls is None:
+            raise ValueError(f"this diffusers version ({diffusers.__version__}) has no {NATIVE_PIPELINES[family]}")
+        est = int(info.get("vram_mb") or 30000)
+        self._room_before_load(est, key)
+        t0 = time.perf_counter()
+        dtype = torch.bfloat16 if cuda_available() else torch.float32
+        pipe = load_pipeline(cls, info["path"], dtype)
+        pipe.set_progress_bar_config(disable=True)
+        pipe._sarness_default_scheduler = pipe.scheduler
+        self.make_room(est, keep={key})
+        mode = self._choose_mode(memory_mode, est, keep={key})
+        if mode == "split":
+            mode = "offload"
+        self._place(pipe, mode)
+        log.info("loaded %s (%s) in %.1fs, mode=%s", info["id"], family, time.perf_counter() - t0, mode)
+        self._cache[key] = _Loaded((pipe, mode), est, kind, mode)
         return ModelHandle(key, info["id"], family, info, pipe, mode)
 
 

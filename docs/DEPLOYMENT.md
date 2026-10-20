@@ -15,8 +15,8 @@ The webview never holds the API token and never connects to the engine. It talks
 
 | Item | Requirement |
 |---|---|
-| OS | Linux x86-64 with systemd; Ubuntu 22.04 or newer (26.04 exercised) |
-| GPU | NVIDIA, driver ≥ 570 for the CUDA 12.8 wheel set; ≥ 560 selects CUDA 12.6 wheels. The engine never installs or modifies drivers. |
+| OS | Linux x86-64 or ARM64 (aarch64) with systemd; Ubuntu 22.04 or newer (26.04 exercised; DGX OS on the DGX Spark, see [MULTI-SERVER.md](MULTI-SERVER.md) §3) |
+| GPU | NVIDIA, driver ≥ 570 for the CUDA 12.8 wheel set; ≥ 560 selects CUDA 12.6 wheels; on ARM64, driver ≥ 580 selects CUDA 13.0 wheels (GB10). The engine never installs or modifies drivers. |
 | Python | ≥ 3.11 with `venv` |
 | Python packages | `fastapi`, `uvicorn[standard]`, `httpx`, `psutil`, `nvidia-ml-py`, `pillow`, `numpy`, `huggingface_hub`, `python-multipart`, **`cryptography ≥ 42`** (SNP identity; required from 0.4.0). Inference extra: `torch`, `torchvision`, `diffusers`, `transformers`, `accelerate`, … |
 | Disk | ≈ 15 GB runtime plus model storage |

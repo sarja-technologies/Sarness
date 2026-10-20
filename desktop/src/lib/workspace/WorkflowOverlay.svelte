@@ -5,8 +5,10 @@
   import IconButton from '../ui/IconButton.svelte';
 
   /** Optional advanced interface: the node editor behind a full-window overlay. */
-  let { kind, graph = $bindable(), onrun, onrebuild, onclose }: {
+  let { kind, graph = $bindable(), engine = null, onrun, onrebuild, onclose }: {
     kind: 'image' | 'video';
+    /** Server whose nodes and models the graph uses (null = primary). */
+    engine?: string | null;
     graph: Workflow | null;
     onrun: (g: Workflow) => Promise<Job>;
     onrebuild: () => Promise<void>;
@@ -23,7 +25,7 @@
     <div class="spacer"></div>
     <IconButton label="Close editor  ·  Esc" onclick={onclose}><X /></IconButton>
   </header>
-  <div class="body"><WorkflowEditor {kind} bind:graph active={true} {onrun} {onrebuild} /></div>
+  <div class="body"><WorkflowEditor {kind} bind:graph {engine} active={true} {onrun} {onrebuild} /></div>
 </div>
 
 <style>

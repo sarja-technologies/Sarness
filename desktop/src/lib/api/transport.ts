@@ -13,6 +13,8 @@ export interface Transport {
   /** query string fragment that authenticates media URLs, e.g. "s=…" */
   mediaQuery: string;
   connected: boolean;
+  /** The desktop proxy routes `/e/<engine>/v1/...` to one of several connected engines. */
+  engines?: boolean;
 }
 
 let current: Transport = { base: '', headers: {}, mediaQuery: '', connected: false };
@@ -33,7 +35,15 @@ export function onTransport(fn: (t: Transport) => void) {
 }
 
 export function proxyTransport(url: string, session: string, connected: boolean): Transport {
-  return { base: url, headers: { 'x-sarness-session': session }, mediaQuery: `s=${encodeURIComponent(session)}`, connected };
+  return { base: url, headers: { 'x-sarness-session': session }, mediaQuery: `s=${encodeURIComponent(session)}`, connected, engines: true };
+}
+
+/**
+ * Base URL for one engine. `engine` is the server profile id; without one (or without a
+ * multi-engine proxy, as in browser development) requests go to the primary engine.
+ */
+export function engineBase(engine?: string | null): string {
+  return engine && current.engines ? `${current.base}/e/${encodeURIComponent(engine)}` : current.base;
 }
 
 export function devTransport(): Transport | null {
@@ -46,16 +56,16 @@ export function devTransport(): Transport | null {
   return { base: url.replace(/\/$/, ''), headers: { Authorization: `Bearer ${token}` }, mediaQuery: `token=${encodeURIComponent(token)}`, connected: true };
 }
 
-/** Absolute URL for an engine-relative media path such as `/v1/files/f_…`. */
-export function mediaUrl(path: string | null | undefined): string {
+/** Absolute URL for an engine-relative media path such as `/v1/files/f_…`, on `engine` (default: primary). */
+export function mediaUrl(path: string | null | undefined, engine?: string | null): string {
   if (!path) return '';
   if (path.startsWith('data:') || path.startsWith('blob:')) return path;
   const sep = path.includes('?') ? '&' : '?';
-  return `${current.base}${path}${sep}${current.mediaQuery}`;
+  return `${engineBase(engine)}${path}${sep}${current.mediaQuery}`;
 }
 
-export function wsUrl(path: string): string {
-  const base = current.base.replace(/^http/, 'ws');
+export function wsUrl(path: string, engine?: string | null): string {
+  const base = engineBase(engine).replace(/^http/, 'ws');
   const sep = path.includes('?') ? '&' : '?';
   return `${base}${path}${sep}${current.mediaQuery}`;
 }

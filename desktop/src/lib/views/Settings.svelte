@@ -5,13 +5,17 @@
   import { applyTheme } from '../stores/theme';
   import { Cable, FolderPlus, HardDrive, Info, KeyRound, Pencil, Plug, Plus, RefreshCw, Server, Sliders, Trash2, Unplug } from '@lucide/svelte';
   import { invoke } from '@tauri-apps/api/core';
-  import { api } from '../api/client';
+  import { apiFor } from '../api/client';
   import { isTauri } from '../api/transport';
   import type { EngineSettings } from '../api/types';
   import SearchSettings from '../components/SearchSettings.svelte';
   import ServerForm from '../components/ServerForm.svelte';
-  import { conn, connect, deleteProfile, disconnect, type Profile } from '../stores/connection.svelte';
-  import { loadModels } from '../stores/models.svelte';
+  import { conn, deleteProfile, engineList, profileName, type Profile } from '../stores/connection.svelte';
+  import ServerCard from '../components/ServerCard.svelte';
+  import Select from '../ui/Select.svelte';
+  import { hostsOf } from '../stores/models.svelte';
+  import { persistRouting, routing, setModelPreference } from '../stores/routing.svelte';
+  import { loadModels, models } from '../stores/models.svelte';
   import { toast, toastError } from '../stores/toast.svelte';
   import Badge from '../ui/Badge.svelte';
   import Button from '../ui/Button.svelte';
@@ -40,6 +44,29 @@
   let newDir = $state('');
   let ep = $state({ name: '', base_url: '', api_key: '', vision: false });
 
+  // Engine settings belong to one server; with several connected, a selector chooses which.
+  let server = $state<string | null>(null);
+  const srv = $derived(server && conn.engines[server] ? server : conn.activeId);
+  const api = $derived(apiFor(srv));
+  const servers = $derived(engineList().map((e) => ({ value: e.id as string | null, label: profileName(e.id), hint: e.state === 'online' ? '' : 'offline' })));
+  let settingsFor: string | null = null;
+  $effect(() => {
+    const id = srv;
+    if (settingsFor !== null && id !== settingsFor && s) {
+      s = null;
+      gw = null;
+    }
+    settingsFor = id;
+  });
+
+  // Models installed on more than one server can have a preferred server.
+  const shared = $derived.by(() => {
+    const seen = new Map<string, { key: string; name: string; hosts: string[] }>();
+    for (const m of models.installed) if (m.supported && m.category !== 'llm') seen.set(m.id, { key: m.id, name: m.name, hosts: hostsOf(m.id, 'media') });
+    for (const c of models.chatModels) seen.set(c.ref, { key: c.ref, name: c.name, hosts: hostsOf(c.ref, 'chat') });
+    return [...seen.values()].filter((x) => x.hosts.length > 1).sort((a, b) => a.name.localeCompare(b.name));
+  });
+
   async function loadEngine() {
     try {
       s = await api.get<EngineSettings>('/v1/settings');
@@ -54,7 +81,7 @@
     [cache, app] = await Promise.all([invoke<any>('cache_info'), invoke<any>('app_info')]);
   }
   $effect(() => {
-    if ((section === 'engine' || section === 'endpoints') && !s && conn.state === 'online') loadEngine();
+    if ((section === 'engine' || section === 'endpoints') && !s && srv && conn.engines[srv]?.state === 'online') loadEngine();
     if ((section === 'desktop' || section === 'about') && !cache) loadDesktop();
   });
 
@@ -66,7 +93,7 @@
       s = await api.patch<EngineSettings>('/v1/settings', body);
       gwToken = '';
       gw = await api.get('/v1/gateway');
-      await loadModels();
+      await loadModels(srv);
       if (gw?.error) toast('error', `Gateway: ${gw.error}`);
       else toast('success', gw?.configured ? `Gateway connected · ${gw.models.length} models` : 'Gateway removed');
     } catch (e) {
@@ -100,7 +127,7 @@
     try {
       await api.post(`/v1/llm/endpoints/${id}/refresh`);
       await loadEngine();
-      loadModels();
+      loadModels(srv);
     } catch (e) {
       toastError(e, 'Saved, but listing its models failed');
     }
@@ -141,31 +168,35 @@
       </div>
     {:else if section === 'servers'}
       <div class="head"><h2>Servers</h2><Button variant="primary" size="sm" onclick={() => (editing = 'new')}><Plus />Add server</Button></div>
-      <p class="muted lead">Sarness connects directly to a Sarness Engine, optionally through an SSH tunnel. Tokens live in your system keyring.</p>
+      <p class="muted lead">Sarness connects directly to each Sarness Engine, optionally through an SSH tunnel, and can use several at once. Tokens live in your system keyring.</p>
       <div class="list">
         {#each conn.profiles as p (p.id)}
-          {@const isActive = conn.activeId === p.id}
-          <div class="card prof" class:active={isActive}>
-            <span class="led" class:on={isActive && conn.state === 'online'} class:off={isActive && conn.state === 'offline'}></span>
-            <div class="info">
-              <div class="name">{p.name} <Badge tone={profileTransport(p) === 'snp' ? 'accent' : 'neutral'}>{transportLabel(profileTransport(p))}</Badge> {#if isActive}<Badge tone={conn.state === 'online' ? 'ok' : 'warn'}>{conn.state}</Badge>{/if}</div>
-              <div class="sub mono">{endpointLabel(p)}</div>
-            </div>
-            {#if !p.has_token}<Badge tone="warn"><KeyRound />No token</Badge>{/if}
-            {#if isActive && conn.state !== 'offline'}
-              <Button size="sm" variant="ghost" onclick={() => disconnect()}><Unplug />Disconnect</Button>
-            {:else}
-              <Button size="sm" variant="subtle" onclick={() => connect(p.id)}><Plug />Connect</Button>
-            {/if}
-            <IconButton label="Edit" onclick={() => (editing = p)}><Pencil /></IconButton>
-            <IconButton label="Remove" tone="danger" onclick={() => removeProfile(p)}><Trash2 /></IconButton>
-          </div>
+          <ServerCard {p} onedit={() => (editing = p)} onremove={() => removeProfile(p)} />
         {/each}
       </div>
-      {#if conn.lastError}<p class="err selectable">Last error: {conn.lastError}</p>{/if}
+
+      {#if conn.profiles.length > 1}
+        <div class="group">
+          <h3>Routing</h3>
+          <p class="muted small">Sarness keeps several servers connected at once. Each request goes to a server that has the chosen model: a server chosen in the conversation first, then the preferred server, then the one with free memory and the shortest queue. A model is never swapped for another, and running work never moves.</p>
+          <Field label="When the preferred server is unavailable">
+            <Segmented value={routing.fallback} onchange={(v) => { routing.fallback = v; persistRouting(); }} items={[{ value: 'any', label: 'Use another server with the model' }, { value: 'preferred', label: 'Wait for the preferred server' }]} />
+          </Field>
+          {#if shared.length}
+            <h3 class="sub3">Preferred server per model</h3>
+            <div class="mprefs">
+              {#each shared as m (m.key)}
+                <span class="truncate">{m.name}</span>
+                <Select size="sm" width="200px" value={routing.modelPrefs[m.key] ?? null} onchange={(v) => setModelPreference(m.key, v)}
+                  options={[{ value: null as string | null, label: 'Automatic' }, ...m.hosts.map((h) => ({ value: h as string | null, label: profileName(h) }))]} />
+              {/each}
+            </div>
+          {/if}
+        </div>
+      {/if}
 
     {:else if section === 'engine'}
-      <div class="head"><h2>Engine & resources</h2><IconButton label="Reload" onclick={loadEngine}><RefreshCw /></IconButton></div>
+      <div class="head"><h2>Engine & resources</h2>{#if servers.length > 1}<Select value={srv} options={servers} size="sm" width="200px" onchange={(v) => (server = v)} />{/if}<IconButton label="Reload" onclick={loadEngine}><RefreshCw /></IconButton></div>
       {#if s}
         <div class="group">
           <h3>GPU scheduling</h3>
@@ -219,12 +250,12 @@
             <TextInput bind:value={newDir} placeholder="/mnt/models" mono size="sm" />
             <Button size="sm" type="submit"><FolderPlus />Add folder</Button>
           </form>
-          {#if conn.system}<p class="faint small">Engine data: <span class="mono">{conn.system.engine.data_dir}</span></p>{/if}
+          {#if conn.engines[srv ?? '']?.system}<p class="faint small">Engine data{servers.length > 1 ? ` on ${profileName(srv)}` : ''}: <span class="mono">{conn.engines[srv ?? '']?.system?.engine.data_dir}</span></p>{/if}
         </div>
       {/if}
 
     {:else if section === 'endpoints'}
-      <div class="head"><h2>Remote chat endpoints</h2></div>
+      <div class="head"><h2>Remote chat endpoints</h2>{#if servers.length > 1}<Select value={srv} options={servers} size="sm" width="200px" onchange={(v) => (server = v)} />{/if}</div>
       <p class="muted lead">Add OpenAI-compatible servers (another llama.cpp server, vLLM, LM Studio, Ollama's /v1 API…). The engine proxies chat to them; keys are stored on the engine only.</p>
       {#if s}
         <div class="list">
@@ -276,7 +307,7 @@
       <div class="head"><h2>About Sarness</h2></div>
       <div class="group">
         <p><strong>Sarness</strong> (Sarja Harness) — self-hosted AI workstation.</p>
-        <p class="muted small">Desktop {app?.version ?? '0.2.0'} · Engine {conn.system?.engine.version ?? '—'} · API {conn.system?.engine.api_version ?? '—'}</p>
+        <p class="muted small">Desktop {app?.version ?? '0.2.0'}{#each engineList() as e (e.id)} · {servers.length > 1 ? `${profileName(e.id)}: ` : ''}Engine {e.system?.engine.version ?? '—'} · API {e.system?.engine.api_version ?? '—'}{:else} · Engine —{/each}</p>
         <p class="muted small" data-testid="build-stamp">Build {__SARNESS_BUILD__}</p>
         <p class="muted small">Keyboard: Ctrl+1…4 choose Chat/Code/Image/Video in the composer (←/→ also move between modes) · Enter send · Shift+Enter new line · Esc close settings · Ctrl+Shift+O new conversation · Alt+1…5 switch sections · Ctrl+Shift+1…4 focus a pane · Ctrl+Shift+M maximise or restore a pane · Ctrl+B sidebar · in the node editor: Space add node, Ctrl+Z/Y undo/redo, Ctrl+C/V/D copy/paste/duplicate, Ctrl+G group, double-click an edge to add a reroute.</p>
         {#if app}<p class="faint small mono">Config: {app.config_dir}</p>{/if}
@@ -292,6 +323,8 @@
 {/if}
 
 <style>
+  .sub3 { margin-top: 14px; }
+  .mprefs { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; align-items: center; font-size: var(--fs-sm); }
   .settings { display: flex; height: 100%; min-height: 0; }
   nav { width: 240px; flex-shrink: 0; padding: 0 10px; background: var(--bg-1); display: flex; flex-direction: column; gap: 2px; }
   nav h1 { font-size: var(--fs-xl); height: 56px; display: flex; align-items: center; padding: 0 8px; }
@@ -306,10 +339,6 @@
   .list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 18px; }
   .card { border-radius: var(--r-lg); background: var(--bg-2); border: 1px solid var(--line-1); }
   .prof { display: flex; align-items: center; gap: 12px; padding: 12px 14px; }
-  .prof.active { border-color: var(--select-line); }
-  .led { width: 9px; height: 9px; border-radius: 50%; background: var(--text-3); flex-shrink: 0; }
-  .led.on { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
-  .led.off { background: var(--warn); }
   .info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
   .name { display: flex; align-items: center; gap: 8px; font-weight: 600; }
   .sub { font-size: var(--fs-xs); color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

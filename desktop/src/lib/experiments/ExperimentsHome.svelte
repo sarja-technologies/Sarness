@@ -1,12 +1,13 @@
 <script lang="ts">
   import { ArrowRight, FlaskConical } from '@lucide/svelte';
-  import { conn } from '../stores/connection.svelte';
+  import { conn, profileName } from '../stores/connection.svelte';
+  import Select from '../ui/Select.svelte';
   import Badge from '../ui/Badge.svelte';
   import Button from '../ui/Button.svelte';
   import Spinner from '../ui/Spinner.svelte';
   import { PaintSession } from './paintbrush/session.svelte';
   import { EXPERIMENTS, type ClientExperiment } from './registry';
-  import { exps, launch, loadCatalogue, summaryFor } from './store.svelte';
+  import { exps, launch, loadCatalogue, setExperimentsEngine, summaryFor } from './store.svelte';
 
   /** The selection screen shown when entering Experiments: nothing opens until the user picks one. */
 
@@ -25,12 +26,18 @@
                text: exps.error ? `The server did not answer: ${exps.error}` : 'The engine on this server does not include this experiment yet — update Sarness Engine.' };
     }
     switch (s.availability.state) {
-      case 'ready': return { tone: 'ok', text: `Ready on ${conn.system?.hardware?.hostname ?? 'your server'}`, launchable: true };
+      case 'ready': return { tone: 'ok', text: `Ready on ${servers.length > 1 ? profileName(exps.engine) : (conn.engines[exps.engine ?? '']?.system?.hardware?.hostname ?? 'your server')}`, launchable: true };
       case 'partial': return { tone: 'ok', text: 'Live preview ready · refine models can be added from inside', launchable: true };
       case 'needs_install': return { tone: 'warn', text: 'Needs a one-time model download on the server', launchable: true };
       default: return { tone: 'err', text: s.availability.reasons.join(' ') || 'Not available on this server', launchable: false };
     }
   }
+
+  // With several servers, experiments run on one of them (sessions and documents live there).
+  const servers = $derived(Object.entries(exps.byEngine).map(([id, list]) => ({
+    value: id as string | null, label: profileName(id),
+    hint: list.some((x) => x.availability.state === 'ready') ? 'ready' : list.length ? 'needs setup' : 'no experiments',
+  })));
 
   const hasDraft = (id: string) => id === 'gods-paintbrush' && PaintSession.hasDraft();
 </script>
@@ -40,6 +47,9 @@
     <span class="eyebrow"><FlaskConical />Experiments</span>
     <h1>Try what Sarness is working on</h1>
     <p class="muted">Early AI tools that run on your Sarness server's GPU. They keep their own state, so you can switch back to Work at any time.</p>
+    {#if servers.length > 1}
+      <div class="srv"><span class="faint">Run experiments on</span><Select value={exps.engine} options={servers} size="sm" width="220px" onchange={(v) => v && setExperimentsEngine(v)} /></div>
+    {/if}
   </header>
 
   <div class="cards">
@@ -81,6 +91,7 @@
 </div>
 
 <style>
+  .srv { display: flex; align-items: center; gap: 10px; margin-top: 12px; font-size: var(--fs-sm); }
   .home { flex: 1; overflow-y: auto; padding: 40px 48px; display: flex; flex-direction: column; gap: 28px; }
   header { display: flex; flex-direction: column; gap: 8px; max-width: 720px; }
   .eyebrow { display: inline-flex; align-items: center; gap: 6px; color: var(--accent); }

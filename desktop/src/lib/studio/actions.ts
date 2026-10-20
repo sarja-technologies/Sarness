@@ -1,8 +1,9 @@
-// Output actions shared by studios, library and detail panes.
+// Output actions shared by studios, library and detail panes. Each acts on the server that stores
+// the generation (`g.engine`; the primary for generations loaded before multi-server support).
 import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
-import { api } from '../api/client';
+import { apiFor } from '../api/client';
 import { isTauri, mediaUrl } from '../api/transport';
 import type { Generation } from '../api/types';
 import { toast, toastError } from '../stores/toast.svelte';
@@ -21,11 +22,11 @@ function ext(g: Generation) {
 /** Saves into ~/Pictures/Sarness or ~/Videos/Sarness and returns the local path. */
 export async function saveToFolder(g: Generation): Promise<string | null> {
   if (!isTauri) {
-    window.open(mediaUrl(g.url), '_blank');
+    window.open(mediaUrl(g.url, g.engine), '_blank');
     return null;
   }
   try {
-    const path = await invoke<string>('save_to_library_folder', { fileId: g.file_id, kind: g.type, name: baseName(g) });
+    const path = await invoke<string>('save_to_library_folder', { fileId: g.file_id, kind: g.type, name: baseName(g), engine: g.engine ?? null });
     toast('success', 'Saved', path, { action: { label: 'Show', run: () => revealItemInDir(path) } });
     return path;
   } catch (e) {
@@ -40,7 +41,7 @@ export async function exportAs(g: Generation) {
   const dest = await save({ defaultPath: `${baseName(g)}.${e}`, filters: [{ name: g.type === 'video' ? 'Video' : 'Image', extensions: [e] }] });
   if (!dest) return;
   try {
-    await invoke('export_file', { fileId: g.file_id, dest });
+    await invoke('export_file', { fileId: g.file_id, dest, engine: g.engine ?? null });
     toast('success', 'Exported', dest, { action: { label: 'Show', run: () => revealItemInDir(dest) } });
   } catch (err) {
     toastError(err, 'Export failed');
@@ -48,7 +49,7 @@ export async function exportAs(g: Generation) {
 }
 
 export async function exportMetadata(g: Generation) {
-  const meta = await api.get(`/v1/generations/${g.id}/metadata`);
+  const meta = await apiFor(g.engine).get(`/v1/generations/${g.id}/metadata`);
   const text = JSON.stringify(meta, null, 2);
   if (!isTauri) {
     const blob = new Blob([text], { type: 'application/json' });
@@ -67,20 +68,21 @@ export async function openInFolder(g: Generation) {
 }
 
 export async function toggleFavorite(g: Generation) {
-  const updated = await api.patch<Generation>(`/v1/generations/${g.id}`, { favorite: !g.favorite });
+  const updated = await apiFor(g.engine).patch<Generation>(`/v1/generations/${g.id}`, { favorite: !g.favorite });
   g.favorite = updated.favorite;
 }
 
 export async function trash(g: Generation) {
-  await api.del(`/v1/generations/${g.id}`);
+  const a = apiFor(g.engine);
+  await a.del(`/v1/generations/${g.id}`);
   toast('info', 'Moved to trash', undefined, {
-    action: { label: 'Undo', run: () => api.post('/v1/generations/bulk', { ids: [g.id], action: 'restore' }) },
+    action: { label: 'Undo', run: () => a.post('/v1/generations/bulk', { ids: [g.id], action: 'restore' }) },
   });
 }
 
 export async function copyImage(g: Generation) {
   try {
-    const blob = await (await fetch(mediaUrl(g.url))).blob();
+    const blob = await (await fetch(mediaUrl(g.url, g.engine))).blob();
     await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]);
     toast('success', 'Image copied');
   } catch (e) {

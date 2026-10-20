@@ -1,6 +1,5 @@
 <script lang="ts">
   import { Copy, Pencil, Trash2 } from '@lucide/svelte';
-  import { api } from '../../api/client';
   import { toastError } from '../../stores/toast.svelte';
   import Empty from '../../ui/Empty.svelte';
   import IconButton from '../../ui/IconButton.svelte';
@@ -8,7 +7,7 @@
   import Spinner from '../../ui/Spinner.svelte';
   import { confirmDialog, promptDialog } from '../../ui/dialogs.svelte';
   import { ago } from '../../util/format';
-  import { exps, loadDocuments } from '../store.svelte';
+  import { exps, loadDocuments, xapi } from '../store.svelte';
   import { PB } from './session.svelte';
 
   /** Saved paintings on the server (newest first). */
@@ -35,12 +34,12 @@
 
   async function rename(id: string, title: string) {
     const t = await promptDialog('Rename painting', title, { confirmLabel: 'Rename' });
-    if (t?.trim()) act(() => api.put(`${PB}/documents/${id}`, { title: t.trim() }), 'Could not rename');
+    if (t?.trim()) act(() => xapi().put(`${PB}/documents/${id}`, { title: t.trim() }), 'Could not rename');
   }
 
   async function remove(id: string, title: string) {
     if (await confirmDialog(`Delete “${title}”?`, 'The painting is removed from the server. Images saved to the Library stay.', { confirmLabel: 'Delete', danger: true })) {
-      act(() => api.del(`${PB}/documents/${id}`), 'Could not delete');
+      act(() => xapi().del(`${PB}/documents/${id}`), 'Could not delete');
     }
   }
 </script>
@@ -60,7 +59,7 @@
           <div class="row">
             <span class="title truncate" title={d.title}>{d.title}</span>
             <IconButton label="Rename" size="sm" onclick={() => rename(d.id, d.title)}><Pencil /></IconButton>
-            <IconButton label="Duplicate" size="sm" onclick={() => act(() => api.post(`${PB}/documents/${d.id}/duplicate`), 'Could not duplicate')}><Copy /></IconButton>
+            <IconButton label="Duplicate" size="sm" onclick={() => act(() => xapi().post(`${PB}/documents/${d.id}/duplicate`), 'Could not duplicate')}><Copy /></IconButton>
             <IconButton label="Delete" size="sm" tone="danger" onclick={() => remove(d.id, d.title)}><Trash2 /></IconButton>
           </div>
           <span class="when faint">{d.id === current ? 'Open now · ' : ''}edited {ago(d.updated_at)}</span>

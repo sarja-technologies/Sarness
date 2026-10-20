@@ -1,12 +1,17 @@
-import { api } from '../api/client';
+import { apiFor } from '../api/client';
+import { isTauri } from '../api/transport';
 import type { Conversation } from '../api/types';
-import { createSessionObject, hydrate, missingFromServer, type Session } from './sessions';
+import { conn } from './connection.svelte';
+import { adoptLegacy, createSessionObject, hydrate, missingFromServer, type Session } from './sessions';
 
-const KEY = 'sarness.sessions.v1';
+// v2 records the server of every conversation and generation. v1 is read once and left untouched,
+// so an older Sarness can still open it.
+const KEY = 'sarness.sessions.v2';
+const LEGACY_KEY = 'sarness.sessions.v1';
 
 function load(): Session[] {
   try {
-    return hydrate(JSON.parse(localStorage.getItem(KEY) ?? '[]'));
+    return hydrate(JSON.parse(localStorage.getItem(KEY) ?? localStorage.getItem(LEGACY_KEY) ?? '[]'));
   } catch {
     return [];
   }
@@ -47,16 +52,25 @@ export function touch(s: Session) {
   s.updated = Date.now() / 1000;
 }
 
-/** Bring engine conversations that predate sessions into history (idempotent). */
-export async function syncServerConversations() {
-  const convs = await api.get<Conversation[]>('/v1/chat/conversations');
-  const add = missingFromServer(store.list, convs);
-  if (add.length) store.list.push(...add);
-  for (const s of store.list) {
-    const c = s.convId ? convs.find((x) => x.id === s.convId) : null;
-    if (c && c.title && (!s.titled || s.title !== c.title) && c.title !== 'New conversation') {
-      s.title = c.title;
-      s.titled = true;
+/** Assigns legacy (pre multi-server) data to the server it came from: the one connected at the time. */
+export function adoptLegacySessions(engine: string) {
+  adoptLegacy(store.list, engine);
+}
+
+/** Bring conversations of one engine (default: every online engine) that predate sessions into history (idempotent). */
+export async function syncServerConversations(engine?: string | null) {
+  const ids = engine ? [engine] : Object.keys(conn.engines).filter((id) => conn.engines[id].state === 'online');
+  for (const id of ids) {
+    const convs = await apiFor(isTauri ? id : null).get<Conversation[]>('/v1/chat/conversations');
+    const add = missingFromServer(store.list, convs, id);
+    if (add.length) store.list.push(...add);
+    for (const s of store.list) {
+      if (s.engine && s.engine !== id) continue;
+      const c = s.convId ? convs.find((x) => x.id === s.convId) : null;
+      if (c && c.title && (!s.titled || s.title !== c.title) && c.title !== 'New conversation') {
+        s.title = c.title;
+        s.titled = true;
+      }
     }
   }
   store.synced = true;

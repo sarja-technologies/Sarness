@@ -1,14 +1,14 @@
 // Simple ⇄ Advanced mode transitions. The engine is the single source of truth
 // for compiling simple parameters to a graph and for deciding whether a graph
 // can be represented in simple mode.
-import { api } from '../api/client';
+import { api, apiFor } from '../api/client';
 import type { Workflow } from '../api/types';
 import { confirmDialog } from '../ui/dialogs.svelte';
 
 /** Returns the graph to show in Advanced mode. Existing advanced work is preserved. */
-export async function switchToAdvanced(kind: 'image' | 'video', existing: Workflow | null, simple: Record<string, unknown>): Promise<Workflow> {
+export async function switchToAdvanced(kind: 'image' | 'video', existing: Workflow | null, simple: Record<string, unknown>, engine: string | null = null): Promise<Workflow> {
   if (existing && existing.nodes?.length) return existing;
-  return api.post<Workflow>('/v1/workflows/compile', { kind, simple });
+  return apiFor(engine).post<Workflow>('/v1/workflows/compile', { kind, simple });
 }
 
 /**

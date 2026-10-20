@@ -1,9 +1,10 @@
 <script lang="ts">
   import { Maximize2, TriangleAlert, X } from '@lucide/svelte';
-  import { api, qs } from '../api/client';
+  import { apiFor, qs } from '../api/client';
   import { mediaUrl } from '../api/transport';
   import type { Generation, Job, Page } from '../api/types';
   import { cancelJob, jobs, onGeneration } from '../stores/jobs.svelte';
+  import { conn, engineOnline, profileName } from '../stores/connection.svelte';
   import type { GenEntry } from '../stores/sessions';
   import { toastError } from '../stores/toast.svelte';
   import ActionBar from '../studio/ActionBar.svelte';
@@ -29,6 +30,9 @@
   let now = $state(Date.now());
 
   const job = $derived(jobs.byId[entry.jobId] as Job | undefined);
+  /** The server that ran this job and stores its outputs. */
+  const engine = $derived(entry.engine ?? job?.engine ?? conn.activeId);
+  const reachable = $derived(engineOnline(engine));
   const live = $derived(jobs.progress[entry.jobId]);
   const preview = $derived(jobs.previews[entry.jobId]);
   const active = $derived(job?.status === 'queued' || job?.status === 'running');
@@ -37,13 +41,18 @@
   const elapsed = $derived(job?.started_at ? Math.max(0, now / 1000 - job.started_at) : null);
 
   // A job from a previous run may not be in the live store yet.
+  // Waits for its server: outputs are never looked for on another one.
   $effect(() => {
-    if (job || missing) return;
-    api.get<Job>(`/v1/jobs/${entry.jobId}`).then((j) => (jobs.byId[j.id] = j)).catch(() => (missing = true));
+    if (job || missing || !reachable) return;
+    const e = engine;
+    apiFor(e).get<Job>(`/v1/jobs/${entry.jobId}`).then((j) => (jobs.byId[j.id] = { ...j, engine: e ?? undefined })).catch((err) => {
+      if ((err as { status?: number }).status === 404) missing = true;
+    });
   });
   $effect(() => {
-    if (job?.status !== 'completed' || gens.length) return;
-    api.get<Page<Generation>>(`/v1/generations${qs({ job_id: entry.jobId, limit: 20 })}`).then((p) => (gens = p.items)).catch(() => {});
+    if (job?.status !== 'completed' || gens.length || !reachable) return;
+    const e = engine;
+    apiFor(e).get<Page<Generation>>(`/v1/generations${qs({ job_id: entry.jobId, limit: 20 })}`).then((p) => (gens = p.items.map((g) => ({ ...g, engine: e ?? undefined })))).catch(() => {});
   });
   $effect(() => onGeneration((g) => {
     if (g.job_id === entry.jobId && !gens.some((x) => x.id === g.id)) gens = [...gens, g];
@@ -74,6 +83,8 @@
 <div class="card" data-state={job?.status ?? (missing ? 'missing' : 'loading')}>
   {#if missing}
     <p class="note"><TriangleAlert />This {entry.mode} job is no longer on the server. It may have been cleared; check the Library.</p>
+  {:else if !job && !reachable}
+    <p class="note"><TriangleAlert />This {entry.mode} is stored on {profileName(engine)}, which is {conn.engines[engine ?? ''] ? 'offline' : 'not connected'}. It appears here once that server is back.</p>
   {:else if !job}
     <div class="ph" style="aspect-ratio:1/1"></div>
   {:else if active}
@@ -100,10 +111,10 @@
       {#each gens as g (g.id)}
         {#if g.type === 'video'}
           <!-- svelte-ignore a11y_media_has_caption -->
-          <video src={mediaUrl(g.url)} poster={mediaUrl(g.thumb_url)} controls preload="metadata" style="aspect-ratio:{g.width ?? 16}/{g.height ?? 9}"></video>
+          <video src={mediaUrl(g.url, engine)} poster={mediaUrl(g.thumb_url, engine)} controls preload="metadata" style="aspect-ratio:{g.width ?? 16}/{g.height ?? 9}"></video>
         {:else}
           <button class="imgbtn" onclick={() => (lightbox = g)} aria-label="View full size" style="aspect-ratio:{g.width ?? 1}/{g.height ?? 1}">
-            <img src={mediaUrl(g.url)} alt={g.prompt ?? 'Generated image'} loading="lazy" />
+            <img src={mediaUrl(g.url, engine)} alt={g.prompt ?? 'Generated image'} loading="lazy" />
             <span class="zoom"><Maximize2 /></span>
           </button>
         {/if}
@@ -117,7 +128,7 @@
 
 {#if lightbox}
   <div class="lightbox" role="dialog" aria-modal="true" aria-label="Full size image" tabindex="-1" onclick={() => (lightbox = null)} onkeydown={() => {}}>
-    <img src={mediaUrl(lightbox.url)} alt={lightbox.prompt ?? ''} />
+    <img src={mediaUrl(lightbox.url, engine)} alt={lightbox.prompt ?? ''} />
     <div class="lbx"><IconButton label="Close" size="lg" onclick={() => (lightbox = null)}><X /></IconButton></div>
     <div class="lbinfo">{lightbox.width}×{lightbox.height} · seed {lightbox.seed}</div>
   </div>
