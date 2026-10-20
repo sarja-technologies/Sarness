@@ -479,3 +479,28 @@ def test_llama_reads_model_up_front_on_unified_memory(tmp_path, monkeypatch):
         args = seen["args"]
         assert [a for a in args if a in ("--load-mode", "dio", "none", "--no-mmap")] == expect, binary
     llama.no_mmap_args.cache_clear()
+
+
+def test_stopping_the_gpu_worker_survives_the_reader_seeing_it_exit():
+    """llm/load stopped the idle diffusion worker; the reader thread cleared the process as soon as the
+    worker exited, while stop() was still waiting for it (AttributeError: 'NoneType' ... 'is_alive')."""
+    from sarness_engine.jobs.supervisor import WorkerSupervisor
+
+    sup = WorkerSupervisor({}, lambda m: None, lambda job, reason: None)
+
+    class Proc:
+        exited = False
+
+        def join(self, timeout=None):
+            self.exited = True
+            sup._proc = None  # what the reader thread does when the pipe closes
+
+        def is_alive(self):
+            return not self.exited
+
+        def kill(self):
+            raise AssertionError("an exited worker is not killed")
+
+    sup._proc, sup._conn = Proc(), SimpleNamespace(send=lambda msg: None)
+    sup.stop()
+    assert sup._proc is None and not sup.alive
