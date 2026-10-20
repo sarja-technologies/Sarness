@@ -21,7 +21,8 @@ def submit_job(body: dict[str, Any] = Body(...), st: AppState = Depends(require_
     if kind not in ("image", "video"):
         raise HTTPException(400, "kind must be 'image' or 'video'")
     return st.jobs.submit(kind=kind, simple=body.get("simple"), workflow=body.get("workflow"),
-                          project_id=body.get("project_id"), folder_id=body.get("folder_id"), title=body.get("title"))
+                          project_id=body.get("project_id"), folder_id=body.get("folder_id"), title=body.get("title"),
+                          client_key=body.get("client_key"))
 
 
 @router.get("/jobs")

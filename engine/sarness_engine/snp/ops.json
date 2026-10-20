@@ -657,6 +657,14 @@
    "params": []
   },
   {
+   "op": "system.capabilities",
+   "method": "GET",
+   "route": "/v1/capabilities",
+   "handler": "api.system:capabilities",
+   "mode": "unary",
+   "params": []
+  },
+  {
    "op": "settings.get",
    "method": "GET",
    "route": "/v1/settings",

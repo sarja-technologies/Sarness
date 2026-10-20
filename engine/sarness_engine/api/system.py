@@ -72,6 +72,15 @@ def system(st: AppState = Depends(require_auth)) -> dict[str, Any]:
     }
 
 
+@router.get("/capabilities")
+def capabilities(st: AppState = Depends(require_auth)) -> dict[str, Any]:
+    """Identity, hardware, free memory, backends, models with their workloads, and load:
+    everything a multi-server desktop needs to route requests to this engine."""
+    from ..capabilities import capabilities as build
+
+    return build(st)
+
+
 def _cuda_tag(torch_v: str | None) -> str | None:
     if not torch_v or "+cu" not in torch_v:
         return None

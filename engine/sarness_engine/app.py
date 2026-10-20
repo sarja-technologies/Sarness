@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -16,7 +17,7 @@ from fastapi.responses import JSONResponse
 from . import API_VERSION, __version__, hardware
 from .api.deps import AppState
 from .chat.service import ChatError, ChatService
-from .config import EngineConfig
+from .config import EngineConfig, save_config
 from .db import Database
 from .experiments import build_registry
 from .experiments import routers as experiment_routers
@@ -43,6 +44,12 @@ def create_app(cfg: EngineConfig, *, start_background: bool = True, start_snp: b
     """``start_snp`` defaults to ``start_background`` so that tests which build the app without
     background services do not bind the SNP port; ``cfg.snp_enabled`` can still switch it off."""
     cfg.ensure_dirs()
+    if not cfg.server_id:
+        cfg.server_id = "srv_" + uuid.uuid4().hex
+        try:
+            save_config(cfg)
+        except OSError as exc:  # read-only config: the id is then per process
+            log.warning("could not persist server_id: %s", exc)
     serve_snp = (start_background if start_snp is None else start_snp) and cfg.snp_enabled
 
     @asynccontextmanager

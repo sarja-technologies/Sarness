@@ -43,6 +43,9 @@ class EngineConfig:
     snp_port: int = DEFAULT_SNP_PORT
     # Extra DNS names / IP addresses for the SNP certificate (the pin does not change with them).
     snp_names: list[str] = field(default_factory=list)
+    # Stable identity of this installation, so a multi-server desktop can tell engines apart
+    # even when addresses change. Created on first start; survives upgrades.
+    server_id: str = ""
 
     # ---- derived paths -------------------------------------------------
     @property
