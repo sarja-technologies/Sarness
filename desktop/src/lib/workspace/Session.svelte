@@ -1,6 +1,6 @@
 <script lang="ts">
   import { Clapperboard, Code2, FileCode, ImageIcon, MessagesSquare, PanelRight, Power, Wand2 } from '@lucide/svelte';
-  import { tick } from 'svelte';
+  import { tick, untrack } from 'svelte';
   import { apiFor, streamChat } from '../api/client';
   import { mediaUrl } from '../api/transport';
   import type { Attachment as ChatAttachment, ChatEvent, ChatParams, Conversation, Generation, Job, Message, Workflow } from '../api/types';
@@ -140,7 +140,8 @@
   // ------------------------------------------------------------- loading
   $effect(() => {
     if (!active) return;
-    if (!models.chatModels.length) loadModels().catch(() => {});
+    // Once only: a server may have no chat models, and each load replaces the lists this effect would read.
+    if (!models.loaded) untrack(() => loadModels()).catch(() => {});
   });
   // Restore the conversation once its server is reachable (it may connect after this pane opens).
   let restored = false;

@@ -97,6 +97,9 @@ const tagged = <T extends object>(list: T[], engine: string) => list.map((x) => 
 /** Loads one engine's models, or every connected engine's when `engine` is omitted. */
 export async function loadModels(engine?: string | null) {
   const ids = engine ? [engine] : Object.keys(conn.engines).filter((id) => conn.engines[id].state === 'online');
+  // Nothing to load: leave the lists untouched. Rebuilding replaces them, which re-runs every effect that
+  // reads them; an effect that loads when they are empty would then spin forever before any server connects.
+  if (!ids.length) return;
   await Promise.all(ids.map(async (id) => {
     const a = apiFor(target(id));
     const [installed, downloads, chat, llm] = await Promise.all([
