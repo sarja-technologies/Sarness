@@ -56,12 +56,27 @@ done
 say "Using $("$PY" --version) at $PY"
 
 # ------------------------------------------------------------------ GPU
+ARCH="$(uname -m)"
+case "$ARCH" in
+  x86_64|amd64) ARCH=x86_64 ;;
+  aarch64|arm64) ARCH=aarch64 ;;
+  *) die "unsupported CPU architecture $ARCH (x86_64 and aarch64 are supported)" ;;
+esac
+say "CPU architecture: $ARCH"
 TORCH_INDEX="https://download.pytorch.org/whl/cpu"
 if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
   DRIVER="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -1)"
   MAJOR="${DRIVER%%.*}"
-  say "NVIDIA driver $DRIVER: $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader | head -1)"
-  if (( MAJOR >= 570 )); then TORCH_INDEX="https://download.pytorch.org/whl/cu128"
+  # memory.total is [N/A] on unified-memory GPUs (DGX Spark GB10); the name is enough here.
+  say "NVIDIA driver $DRIVER: $(nvidia-smi --query-gpu=name,compute_cap --format=csv,noheader | head -1)"
+  if [[ "$ARCH" == aarch64 ]]; then
+    # ARM64 (DGX Spark / GB10, Grace Hopper): official CUDA 13 wheels carry Blackwell sm_120/sm_121a
+    # kernels and need driver 580+; CUDA 12.8 aarch64 wheels are the fallback for older drivers.
+    if (( MAJOR >= 580 )); then TORCH_INDEX="https://download.pytorch.org/whl/cu130"
+    elif (( MAJOR >= 570 )); then TORCH_INDEX="https://download.pytorch.org/whl/cu128"
+    else warn "Driver $DRIVER is too old for CUDA 12.8 on ARM64; installing CPU-only PyTorch."
+    fi
+  elif (( MAJOR >= 570 )); then TORCH_INDEX="https://download.pytorch.org/whl/cu128"
   elif (( MAJOR >= 560 )); then TORCH_INDEX="https://download.pytorch.org/whl/cu126"
   else warn "Driver $DRIVER is older than the CUDA 12.6 requirement; installing CPU-only PyTorch. Update the NVIDIA driver for GPU acceleration."
   fi
@@ -93,8 +108,13 @@ fi
 "$VENV/bin/python" -m pip install --quiet --upgrade pip wheel
 say "Installing PyTorch from $TORCH_INDEX (large download)"
 "$VENV/bin/pip" install --progress-bar off torch torchvision --index-url "$TORCH_INDEX"
+# Pin the PyTorch build just installed so the engine's dependencies cannot replace it with a
+# different (e.g. CPU-only or wrong-architecture) wheel from PyPI.
+CONSTRAINTS="$PREFIX/torch-constraints.txt"
+"$VENV/bin/pip" freeze | grep -iE '^(torch|torchvision)==' > "$CONSTRAINTS" || true
 say "Installing Sarness Engine and inference libraries"
-"$VENV/bin/pip" install --progress-bar off "$PREFIX/src/engine[inference]"
+"$VENV/bin/pip" install --progress-bar off "$PREFIX/src/engine[inference]" -c "$CONSTRAINTS" \
+  --extra-index-url "$TORCH_INDEX"
 ENGINE="$VENV/bin/sarness-engine"
 
 # ------------------------------------------------------------------ bind
@@ -124,6 +144,13 @@ fi
 INIT_JSON="$("$ENGINE" "${INIT_ARGS[@]}")"
 
 if [[ $WITH_LLAMA -eq 1 ]]; then
+  if [[ "$ARCH" != x86_64 ]]; then
+    # No prebuilt ARM64 CUDA releases exist: the engine builds llama.cpp from source for this GPU.
+    for tool in git cmake g++; do
+      command -v "$tool" >/dev/null 2>&1 || warn "$tool is missing; the llama.cpp source build needs it (sudo apt install git cmake build-essential)"
+    done
+    say "Building the llama.cpp server runtime from source for $ARCH (10-20 minutes)"
+  fi
   say "Installing the llama.cpp server runtime"
   "$ENGINE" install-llama || warn "llama.cpp runtime installation failed; you can retry from Sarness → Models."
 fi

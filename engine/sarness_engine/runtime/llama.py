@@ -17,11 +17,16 @@ from typing import Any, AsyncIterator
 
 import httpx
 
-from ..hardware import gpus
+from ..hardware import arch, gpus
 
 log = logging.getLogger("sarness.llama")
 
 RELEASES_API = "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=15"
+REPO_URL = "https://github.com/ggml-org/llama.cpp"
+# Prebuilt release archives exist only for x86-64; other machines build from source.
+PREBUILT = {"cuda-12.8": "ubuntu-cuda-12.8-x64", "vulkan": "ubuntu-vulkan-x64", "cpu": "ubuntu-x64"}
+VARIANTS = (*PREBUILT, "cuda-src", "cpu-src")
+BUILD_TARGETS = ("llama-server", "llama-bench", "llama-cli")
 
 
 def _free_port() -> int:
@@ -72,6 +77,8 @@ class LlamaRuntime:
 
     @staticmethod
     def choose_variant() -> str:
+        if arch() != "x86_64":
+            return "cuda-src" if gpus() and find_nvcc() else "cpu-src"
         if gpus():
             return "cuda-12.8"
         try:
@@ -82,12 +89,17 @@ class LlamaRuntime:
         except OSError:
             return "cpu"
 
-    def install(self, progress=None, variant: str | None = None) -> str:
-        """Downloads the latest official release for this machine (CUDA, Vulkan or CPU)."""
+    def install(self, progress=None, variant: str | None = None, ref: str | None = None) -> str:
+        """Installs llama.cpp for this machine: the latest official x86-64 release (CUDA, Vulkan
+        or CPU), or a source build (`*-src`, e.g. ARM64 with CUDA 13 on DGX Spark)."""
         variant = variant or self.choose_variant()
+        if variant not in VARIANTS:
+            raise ValueError(f"unknown llama.cpp variant {variant!r}")
+        if variant.endswith("-src"):
+            return self.build(progress, cuda=variant == "cuda-src", ref=ref)
         with httpx.Client(follow_redirects=True, timeout=httpx.Timeout(30, read=300)) as c:
             releases = c.get(RELEASES_API, headers={"Accept": "application/vnd.github+json"}).json()
-            suffix = {"cuda-12.8": "ubuntu-cuda-12.8-x64", "vulkan": "ubuntu-vulkan-x64", "cpu": "ubuntu-x64"}[variant]
+            suffix = PREBUILT[variant]
             # The newest release that actually ships prebuilt Linux binaries for this variant.
             for rel in releases:
                 tag = rel["tag_name"]
@@ -129,6 +141,97 @@ class LlamaRuntime:
                 raise RuntimeError("llama-server not found in the downloaded release")
             log.info("installed llama.cpp %s (%s) at %s", tag, variant, b)
             return f"{tag} ({variant})"
+
+    def build(self, progress=None, *, cuda: bool, ref: str | None = None, jobs: int | None = None) -> str:
+        """Builds llama.cpp from a release tag (latest by default) with CMake.
+
+        CUDA builds target the compute capability of the installed GPU (e.g. 12.1 → `121a-real`
+        on GB10), so the kernels are native rather than JIT-compiled from PTX.
+        """
+        for tool in ("git", "cmake"):
+            if not shutil.which(tool):
+                raise RuntimeError(f"building llama.cpp needs `{tool}` on PATH")
+        nvcc = find_nvcc() if cuda else None
+        if cuda and not nvcc:
+            raise RuntimeError("building llama.cpp with CUDA needs the CUDA toolkit (nvcc not found)")
+        if not ref:
+            with httpx.Client(follow_redirects=True, timeout=30) as c:
+                rel = c.get(RELEASES_API.split("?")[0] + "/latest",
+                            headers={"Accept": "application/vnd.github+json"}).json()
+            ref = rel["tag_name"]
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", ref):
+            raise ValueError(f"invalid llama.cpp ref {ref!r}")
+        staging = self.root.parent / "llama.staging"
+        shutil.rmtree(staging, ignore_errors=True)
+        staging.mkdir(parents=True)
+        logf = staging / "build.log"
+        steps: list[list[str]] = [["git", "clone", "--depth", "1", "--branch", ref, REPO_URL, str(staging / "src")]]
+        configure = ["cmake", "-S", str(staging / "src"), "-B", str(staging / "build"),
+                     "-DCMAKE_BUILD_TYPE=Release", "-DLLAMA_BUILD_TESTS=OFF", "-DLLAMA_BUILD_EXAMPLES=OFF",
+                     "-DLLAMA_CURL=OFF", "-DGGML_NATIVE=ON", "-DCMAKE_INSTALL_RPATH=$ORIGIN",
+                     "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON"]
+        if shutil.which("ninja"):
+            configure += ["-G", "Ninja"]
+        env = dict(os.environ)
+        if cuda:
+            cc = cuda_architecture()
+            configure += ["-DGGML_CUDA=ON", f"-DCMAKE_CUDA_COMPILER={nvcc}"]
+            if cc:
+                configure.append(f"-DCMAKE_CUDA_ARCHITECTURES={cc}")
+            env["PATH"] = f"{Path(nvcc).parent}:{env.get('PATH', '')}"
+        steps.append(configure)
+        steps.append(["cmake", "--build", str(staging / "build"), "--config", "Release",
+                      "-j", str(jobs or os.cpu_count() or 4), "--target", *BUILD_TARGETS])
+        with open(logf, "wb") as lf:
+            for n, cmd in enumerate(steps):
+                log.info("llama.cpp build: %s", " ".join(cmd[:4]))
+                if progress:
+                    progress(n, len(steps))
+                r = subprocess.run(cmd, stdout=lf, stderr=subprocess.STDOUT, env=env)
+                if r.returncode != 0:
+                    raise RuntimeError(f"llama.cpp build step failed ({cmd[0]} {cmd[1]}); see {logf}")
+        out = staging / "x" / f"llama-{ref}"
+        out.mkdir(parents=True)
+        for f in (staging / "build" / "bin").iterdir():
+            if f.is_file():
+                shutil.copy2(f, out / f.name)
+        variant = "cuda-src" if cuda else "cpu-src"
+        shutil.rmtree(self.root, ignore_errors=True)
+        (staging / "x").rename(self.root)
+        shutil.copy2(logf, self.root / "build.log")
+        shutil.rmtree(staging, ignore_errors=True)
+        label = f"{ref} ({variant}{', sm ' + cuda_architecture() if cuda else ''})"
+        (self.root / "VERSION").write_text(label)
+        if progress:
+            progress(len(steps), len(steps))
+        if not self.binary():
+            raise RuntimeError("llama-server was not produced by the build")
+        log.info("built llama.cpp %s at %s", label, self.binary())
+        return label
+
+
+def find_nvcc() -> str | None:
+    """The CUDA compiler, also when /usr/local/cuda/bin is not on PATH (the usual case for services)."""
+    found = shutil.which("nvcc")
+    if found:
+        return found
+    for cand in [os.environ.get("CUDA_HOME", ""), "/usr/local/cuda", *sorted(map(str, Path("/usr/local").glob("cuda-*")),
+                                                                         reverse=True)]:
+        if cand and os.access(Path(cand) / "bin" / "nvcc", os.X_OK):
+            return str(Path(cand) / "bin" / "nvcc")
+    return None
+
+
+def cuda_architecture() -> str | None:
+    """CMake CUDA architecture for GPU 0: `121a-real` for compute capability 12.1. The `a` suffix
+    enables architecture-specific instructions (Blackwell block-scaled MMA used by MXFP4/NVFP4)."""
+    g = gpus()
+    cc = g[0].get("compute_capability") if g else None
+    if not cc:
+        return None
+    major, minor = cc.split(".")
+    num = int(major) * 10 + int(minor)
+    return f"{num}a-real" if num >= 90 else f"{num}-real"
 
 
 class LlamaServer:
