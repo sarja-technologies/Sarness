@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import sqlite3
 import logging
+import sqlite3
 import time
 from typing import Any
 

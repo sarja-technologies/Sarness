@@ -269,8 +269,8 @@ CATALOG: list[dict[str, Any]] = [
         # Two 14B experts (high- and low-noise); stored in bf16, held in FP8 on unified memory.
         "vram_mb": 72000, "vram_offload_mb": 72000,
         "description": "Wan's large text-to-video model: two 14B experts, the most realistic open Wan. Needs a "
-                       "large-memory server (DGX Spark); several minutes per clip.",
-        "defaults": {"steps": 40, "guidance": 4.0, "width": 1280, "height": 720, "frames": 81, "fps": 16, "flow_shift": 12.0},
+                       "large-memory server (DGX Spark): about 40 minutes for 5 s at 480p, about 2 hours at 720p.",
+        "defaults": {"steps": 40, "guidance": 4.0, "width": 832, "height": 480, "frames": 81, "fps": 16, "flow_shift": 12.0},
         "limits": {"steps": [4, 60], "guidance": [1, 10], "frames": [5, 121], "frame_step": 4, "fps": [12, 24],
                    "resolutions": [[1280, 720], [720, 1280], [832, 480], [480, 832]], "multiple": 16},
         "capabilities": {"modes": ["t2v"], "negative_prompt": True, "start_frame": False, "end_frame": False,
@@ -288,8 +288,8 @@ CATALOG: list[dict[str, Any]] = [
         "size_gb": 126.2,
         "vram_mb": 72000, "vram_offload_mb": 72000,
         "description": "Wan's large image-to-video model: animates a start frame with realistic motion. Needs a "
-                       "large-memory server (DGX Spark).",
-        "defaults": {"steps": 40, "guidance": 3.5, "width": 1280, "height": 720, "frames": 81, "fps": 16, "flow_shift": 5.0},
+                       "large-memory server (DGX Spark): about 40 minutes for 5 s at 480p, about 2 hours at 720p.",
+        "defaults": {"steps": 40, "guidance": 3.5, "width": 832, "height": 480, "frames": 81, "fps": 16, "flow_shift": 5.0},
         "limits": {"steps": [4, 60], "guidance": [1, 10], "frames": [5, 121], "frame_step": 4, "fps": [12, 24],
                    "resolutions": [[1280, 720], [720, 1280], [832, 480], [480, 832]], "multiple": 16},
         "capabilities": {"modes": ["i2v"], "negative_prompt": True, "start_frame": True, "end_frame": False,
