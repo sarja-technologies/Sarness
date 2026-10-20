@@ -89,7 +89,7 @@ class ModelService:
                                          category=e["category"], repo=e["repo"], patterns=q["files"], dest=dest,
                                          catalog_id=e["id"])
         return self.downloads.create(model_id=e["id"], name=e["name"], category=e["category"], repo=e["repo"],
-                                     patterns=e.get("files"), dest=dest, catalog_id=e["id"])
+                                     patterns=e.get("files"), dest=dest, catalog_id=e["id"], sources=e.get("sources"))
 
     # ----------------------------------------------------------- HF browse
     def hf_search(self, q: str, kind: str | None = None, limit: int = 30) -> list[dict[str, Any]]:

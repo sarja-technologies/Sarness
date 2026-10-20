@@ -23,6 +23,7 @@ from typing import Any
 
 from ..db import Database, now
 from .catalog import CATALOG, get_entry
+from .downloads import MARKER_PREFIX, pending_files
 
 log = logging.getLogger("sarness.registry")
 
@@ -36,6 +37,7 @@ PIPELINE_FAMILIES = {
     "QwenImage21Pipeline": ("image", "qwenimage21"),
     "LTX2Pipeline": ("video", "ltx2"),
     "LTX2ImageToVideoPipeline": ("video", "ltx2"),
+    "MiniMaxH3ModularPipeline": ("video", "minimaxh3"),
 }
 UNSUPPORTED_PIPELINES = {
     "FluxPipeline", "StableDiffusion3Pipeline", "LTXPipeline", "HunyuanVideoPipeline", "CogVideoXPipeline",
@@ -176,9 +178,13 @@ class ModelRegistry:
     def _scan_category(self, cat: str, d: Path) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         if cat == "llm":
+            pending = {p for m in d.rglob(MARKER_PREFIX + "*") for p in pending_files(m.parent)}
             for f in sorted(d.rglob("*.gguf")):
                 if f.name.startswith("mmproj") or f.name.startswith("mtp-") or ".partial" in f.name:
                     continue
+                split = f.name.split("-00001-of-")[0] + "-000" if "-00001-of-" in f.name else None
+                if f in pending or split and any(p.parent == f.parent and p.name.startswith(split) for p in pending):
+                    continue  # still downloading (a split GGUF counts until every shard is in)
                 if re.search(r"-0000[2-9]-of-", f.name):
                     continue  # later shards of split GGUFs
                 mmproj = _companion(f, d, "mmproj*.gguf")
@@ -199,6 +205,8 @@ class ModelRegistry:
         for p in sorted(d.iterdir()):
             if p.name.startswith(".") or p.name.endswith(".partial"):
                 continue
+            if p.is_dir() and any(p.glob(MARKER_PREFIX + "*")):
+                continue  # still downloading
             item = self._identify(cat, p)
             if item:
                 out.append(item)
@@ -324,6 +332,9 @@ class ModelRegistry:
         if fam == "ltx2":
             return {"modes": ["t2v", "i2v"], "negative_prompt": True, "start_frame": True, "end_frame": False,
                     "motion": [], "audio": True}
+        if fam == "minimaxh3":
+            return {"modes": ["t2v", "i2v"], "negative_prompt": False, "start_frame": True, "end_frame": True,
+                    "motion": [], "audio": True}
         return {}
 
     def worker_info(self, model_id: str) -> dict[str, Any] | None:
@@ -343,6 +354,7 @@ _FAMILY_DEFAULTS = {
     "wan22-ti2v": {"steps": 40, "guidance": 5.0, "width": 1280, "height": 704, "frames": 49, "fps": 24, "flow_shift": 5.0},
     "qwenimage21": {"steps": 40, "guidance": 4.0, "width": 1024, "height": 1024},
     "ltx2": {"steps": 30, "guidance": 3.0, "width": 768, "height": 512, "frames": 121, "fps": 24},
+    "minimaxh3": {"steps": 30, "guidance": 1.0, "width": 1344, "height": 768, "frames": 124, "fps": 24},
 }
 _FAMILY_LIMITS = {
     "sdxl": {"steps": [1, 100], "guidance": [0, 20], "min_side": 512, "max_side": 1536, "multiple": 8},
@@ -351,6 +363,7 @@ _FAMILY_LIMITS = {
     "wan22-ti2v": {"steps": [4, 60], "frames": [5, 121], "frame_step": 4, "multiple": 32},
     "qwenimage21": {"steps": [4, 80], "guidance": [1, 10], "min_side": 512, "max_side": 2048, "multiple": 16},
     "ltx2": {"steps": [4, 60], "frames": [9, 257], "frame_step": 8, "multiple": 32},
+    "minimaxh3": {"steps": [8, 60], "frames": [124, 345], "frame_step": 1, "multiple": 32},
 }
 
 

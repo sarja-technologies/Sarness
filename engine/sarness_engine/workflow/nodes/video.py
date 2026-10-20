@@ -19,7 +19,7 @@ VIDEO_MEMORY_MODES = [
     {"value": "sequential", "label": "Sequential (minimum VRAM, slowest)"},
 ]
 
-VIDEO_FAMILIES = ["wan", "wan22-ti2v", "ltx2", "gateway"]
+VIDEO_FAMILIES = ["wan", "wan22-ti2v", "ltx2", "minimaxh3", "gateway"]
 WAN_NEGATIVE = ("blurry, low quality, worst quality, jpeg artifacts, static, still frame, overexposed, "
                 "distorted, deformed, extra limbs, fused fingers, messy background, watermark, subtitles, text")
 
@@ -55,6 +55,9 @@ def encode_video_prompt(ctx, inputs, params):
         ctx.annotate(prompt=params["prompt"], negative_prompt=params["negative_prompt"])
         return {"conditioning": {"family": "ltx2", "prompt": params["prompt"],
                                  "negative_prompt": params["negative_prompt"]}}
+    if handle.family == "minimaxh3":  # encodes inside its pipeline; guidance-distilled, no negative prompt
+        ctx.annotate(prompt=params["prompt"])
+        return {"conditioning": {"family": "minimaxh3", "prompt": params["prompt"]}}
     pipe = handle.pipe
     dev = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     te = pipe.text_encoder
@@ -148,6 +151,8 @@ def video_sampler(ctx, inputs, params):
     seed = int(params["seed"])
     if handle.family == "ltx2":
         return _ltx2_sample(ctx, handle, cond, start, w, h, frames, steps, seed, params)
+    if handle.family == "minimaxh3":
+        return _minimax_h3_sample(ctx, handle, cond, start, end, w, h, frames, steps, seed)
 
     pipe = handle.pipe
     base_sched = pipe.__dict__.get("_sarness_default_scheduler") or pipe.scheduler
@@ -233,6 +238,49 @@ def _ltx2_sample(ctx, handle, cond, start, w, h, frames, steps, seed, params):
     ctx.annotate(seed=seed, steps=steps, guidance=float(params["guidance"]), width=w, height=h, frames=len(pil),
                  fps=fps, audio=sound is not None, mode="i2v" if start is not None else "t2v")
     return {"video": {"frames": pil, "fps": fps, "audio": sound}}
+
+
+def _minimax_h3_sample(ctx, handle, cond, start, end, w, h, frames, steps, seed):
+    """MiniMax H3: video and a stereo soundtrack in one pass, at a fixed 24 fps. The pipeline snaps the
+    frame count up to the next length its VAE decodes (17n + 5, 5-15 s)."""
+    import numpy as np
+    import torch
+
+    pipe = handle.pipe
+    evals = max(steps - 1, 1)  # the step count includes the terminal sigma
+    done = [0]
+
+    def on_step(module, args, kwargs):
+        done[0] += 1
+        ctx.progress(done[0], evals, f"Step {done[0]}/{evals}")
+
+    kwargs: dict[str, Any] = dict(prompt=cond["prompt"], height=h, width=w, num_frames=frames, num_inference_steps=steps,
+                                  generator=torch.Generator(device="cpu").manual_seed(seed),
+                                  output=["videos", "audio", "sampling_rate"], output_type="np")
+    if start is not None:
+        kwargs["image"] = ImageOps.fit(start[0].convert("RGB"), (w, h), Image.LANCZOS)
+    if end is not None:
+        kwargs["last_image"] = ImageOps.fit(end[0].convert("RGB"), (w, h), Image.LANCZOS)
+    hook = pipe.transformer.register_forward_pre_hook(on_step, with_kwargs=True)
+    ctx.progress(0, evals, "Encoding prompt")
+    try:
+        with torch.inference_mode():
+            out = pipe(**kwargs)
+    finally:
+        hook.remove()
+    video = out["videos"][0]
+    arr = np.asarray(video.float().cpu().numpy() if isinstance(video, torch.Tensor) else video)
+    if arr.dtype != np.uint8:
+        arr = (np.clip(arr, 0, 1) * 255).round().astype(np.uint8)
+    pil = [Image.fromarray(f) for f in arr]
+    sound = None
+    if out.get("audio") is not None:
+        a = out["audio"][0]
+        sound = {"samples": a.float().cpu().numpy() if isinstance(a, torch.Tensor) else np.asarray(a, dtype=np.float32),
+                 "rate": int(out["sampling_rate"])}
+    mode = "fl2v" if start is not None and end is not None else "i2v" if start is not None or end is not None else "t2v"
+    ctx.annotate(seed=seed, steps=steps, width=w, height=h, frames=len(pil), fps=24.0, audio=sound is not None, mode=mode)
+    return {"video": {"frames": pil, "fps": 24.0, "audio": sound}}
 
 
 # ----------------------------------------------------------------- frame tools

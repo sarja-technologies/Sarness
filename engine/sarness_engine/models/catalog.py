@@ -299,21 +299,27 @@ CATALOG: list[dict[str, Any]] = [
     },
     {
         "id": "minimax-h3",
-        "name": "MiniMax H3 (video + audio)",
+        "name": "MiniMax H3 (video + audio) · FP8",
         "category": "video", "family": "minimaxh3", "format": "diffusers",
         "repo": "MiniMaxAI/MiniMax-H3",
-        # Official bf16 weights for the base model (text, first/last-frame to video with stereo audio). The
-        # reference-mode transformer (transformer_ref/) and the single-file FL2VA/Ref2VA copies are not fetched.
+        # Official components except the transformers: the dense bf16 denoisers (2 × 61.7 GB) are replaced
+        # by unsloth's pre-quantized FP8 keyframe transformer (20 GB), and text-encoder shards 12-13 hold only
+        # decoder layers 50-63, which H3 never reads (it conditions on layer 50). ~88 GB instead of ~500 GB.
         "files": ["model_index.json", "modular_model_index.json", "LICENSE", "scheduler/*", "audio_scheduler/*",
-                  "processor/*", "tokenizer/*", "text_encoder/*", "transformer/*", "vae/*", "audio_vae/*"],
-        "size_gb": 144.0,
-        "vram_mb": 110000, "vram_offload_mb": 110000,
-        "description": "MiniMax's omni-modal video model with native stereo audio, 768p, 4–15 s. Very large: the "
-                       "text encoder and transformer are loaded in turn on a DGX Spark.",
-        "defaults": {"steps": 40, "guidance": 5.0, "width": 1360, "height": 768, "frames": 121, "fps": 24},
-        "limits": {"steps": [8, 60], "guidance": [1, 10], "frames": [97, 361], "frame_step": 8, "fps": [24, 24],
-                   "resolutions": [[1360, 768], [768, 1360], [1024, 1024]], "multiple": 16},
-        "capabilities": {"modes": ["t2v", "i2v"], "negative_prompt": True, "start_frame": True, "end_frame": True,
+                  "processor/*", "tokenizer/*", "vae/*", "audio_vae/*", "transformer/config.json",
+                  "text_encoder/*.json", "text_encoder/*.txt", *[f"text_encoder/model-{i:05d}-of-00014.safetensors"
+                                                               for i in (*range(1, 12), 14)]],
+        "sources": [{"repo": "unsloth/MiniMax-H3-FP8", "files": ["MiniMax-H3-FP8.safetensors", "NOTICE"],
+                     "subdir": "transformer"}],
+        "size_gb": 88.0,
+        "vram_mb": 72000, "vram_offload_mb": 72000,
+        "description": "MiniMax's omni-modal video model with native stereo audio: text or first/last frames to "
+                       "5-15 s clips at 24 fps, 768p. FP8 transformer (unsloth build) and FP8 text encoder; needs a "
+                       "large-memory server (DGX Spark).",
+        "defaults": {"steps": 30, "guidance": 1.0, "width": 1344, "height": 768, "frames": 124, "fps": 24},
+        "limits": {"steps": [8, 60], "guidance": [1, 1], "frames": [124, 345], "frame_step": 1, "fps": [24, 24],
+                   "resolutions": [[1344, 768], [768, 1344], [960, 544], [544, 960]], "multiple": 32},
+        "capabilities": {"modes": ["t2v", "i2v"], "negative_prompt": False, "start_frame": True, "end_frame": True,
                          "motion": [], "lora": False, "audio": True},
         "license": "MiniMax H3 Community License",
         "tags": ["128gb", "audio", "realistic"],

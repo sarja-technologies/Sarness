@@ -184,20 +184,22 @@ class ModelManager:
         log.info("unloading %s", key)
         obj = item.obj[0] if isinstance(item.obj, tuple) else item.obj
         # Move weights off the GPU explicitly: this frees VRAM even if stray
-        # references (caches, tracebacks) keep the Python objects alive.
+        # references (caches, tracebacks) keep the Python objects alive. With unified memory a copy to
+        # the CPU would land in the same RAM (briefly doubling it), so the weights are dropped instead.
+        off = "meta" if unified_memory() else "cpu"
         try:
             if hasattr(obj, "remove_all_hooks"):
                 obj.remove_all_hooks()
             if hasattr(obj, "components"):
                 for comp in obj.components.values():
                     if isinstance(comp, torch.nn.Module):
-                        comp.to("cpu")
+                        comp.to(off)
                 for sub in (obj.__dict__.get("_sarness_denoise") or {}).values():
                     sub.__dict__.pop("_sarness_denoise", None)
             elif hasattr(obj, "model") and isinstance(getattr(obj, "model"), torch.nn.Module):
-                obj.model.to("cpu")  # spandrel descriptor
+                obj.model.to(off)  # spandrel descriptor
             elif isinstance(obj, torch.nn.Module):
-                obj.to("cpu")
+                obj.to(off)
         except Exception as exc:  # pragma: no cover - best effort
             log.warning("error while unloading %s: %s", key, exc)
         del obj, item
@@ -343,6 +345,8 @@ class ModelManager:
         if cached is not None:
             pipe, mode = cached
             return ModelHandle(key, info["id"], family, info, pipe, mode)
+        if family == "minimaxh3":
+            return self._minimax_h3(info)
         if family in NATIVE_PIPELINES:
             return self._native_pipeline("video", info, memory_mode)
         if family not in ("wan", "wan22-ti2v"):
@@ -405,6 +409,23 @@ class ModelManager:
         self._cache[key] = _Loaded((pipe, mode), est, "video", mode)
         return ModelHandle(key, info["id"], family, info, pipe, mode)
 
+
+    def _minimax_h3(self, info: dict[str, Any]) -> ModelHandle:
+        """MiniMax H3: FP8 transformer and conditioner, always fully resident (see runtime.minimax_h3)."""
+        from .minimax_h3 import load_pipeline as load_minimax_h3
+
+        key = f"video:{info['id']}"
+        est = int(info.get("vram_mb") or 70000)
+        if not cuda_available():
+            raise ValueError("MiniMax H3 needs an NVIDIA GPU")
+        if not unified_memory() and total_vram_mb() < est:
+            raise ValueError(f"MiniMax H3 needs about {est // 1024} GB of GPU memory; this GPU has {total_vram_mb() // 1024} GB")
+        self.make_room(est, keep={key})
+        t0 = time.perf_counter()
+        pipe = load_minimax_h3(info["path"], device())
+        log.info("loaded %s (minimaxh3) in %.1fs", info["id"], time.perf_counter() - t0)
+        self._cache[key] = _Loaded((pipe, "gpu"), est, "video", "gpu")
+        return ModelHandle(key, info["id"], "minimaxh3", info, pipe, "gpu")
 
     def _native_pipeline(self, kind: str, info: dict[str, Any], memory_mode: str) -> ModelHandle:
         """Loads a pipeline that runs end to end (Qwen-Image 2.1, LTX-2) in bf16."""

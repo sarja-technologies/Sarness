@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fnmatch
+import json
 import logging
 import shutil
 import threading
@@ -25,6 +26,30 @@ SAFETY_MARGIN = 2 * 1024**3  # keep 2 GiB free after a download
 
 class DownloadError(Exception):
     pass
+
+
+MARKER_PREFIX = ".sarness-downloading."
+
+
+def pending_files(root: Path) -> set[Path]:
+    """Files under ``root`` that a download has not finished yet, from the markers downloads leave in
+    their destination until they complete. The registry does not list a model while it has any."""
+    out: set[Path] = set()
+    for m in root.glob(MARKER_PREFIX + "*"):
+        try:
+            out.update(m.parent / f for f in json.loads(m.read_text()))
+        except (OSError, ValueError):
+            continue
+    return out
+
+
+def _write_marker(dest: Path, did: str, files: list[dict[str, Any]]) -> None:
+    dest.mkdir(parents=True, exist_ok=True)
+    (dest / f"{MARKER_PREFIX}{did}").write_text(json.dumps([f["path"] for f in files]))
+
+
+def _drop_marker(dest: Path, did: str) -> None:
+    (dest / f"{MARKER_PREFIX}{did}").unlink(missing_ok=True)
 
 
 def _client(token: str | None) -> httpx.Client:
@@ -94,7 +119,10 @@ class DownloadManager:
 
     def create(self, *, model_id: str, name: str, category: str, repo: str, patterns: list[str] | None,
                dest: Path, catalog_id: str | None = None, revision: str = "main",
-               meta: dict[str, Any] | None = None) -> dict[str, Any]:
+               meta: dict[str, Any] | None = None, sources: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        """``sources`` adds files from other repositories to the same model folder:
+        ``[{"repo", "files": [patterns], "subdir"}]`` (e.g. a pre-quantized transformer next to the
+        official components)."""
         active = self.db.one("SELECT * FROM downloads WHERE model_id = ? AND status IN ('queued','downloading','paused')",
                              [model_id])
         if active:
@@ -102,6 +130,14 @@ class DownloadManager:
         files = select_files(list_repo_files(repo, self.token_getter() or None, revision), patterns)
         if not files:
             raise DownloadError("no matching files in repository")
+        for src in sources or []:
+            extra = select_files(list_repo_files(src["repo"], self.token_getter() or None, src.get("revision", "main")),
+                                 src.get("files"))
+            if not extra:
+                raise DownloadError(f"no matching files in {src['repo']}")
+            sub = src.get("subdir", "").strip("/")
+            files += [{"path": f"{sub}/{f['path']}" if sub else f["path"], "size": f["size"], "repo": src["repo"],
+                       "src": f["path"], "revision": src.get("revision", "main")} for f in extra]
         total = sum(f["size"] for f in files)
         already = sum((dest / f["path"]).stat().st_size for f in files if (dest / f["path"]).exists())
         needed = total - already
@@ -116,6 +152,7 @@ class DownloadManager:
             "created_at": now(), "updated_at": now(),
         }
         self.db.insert("downloads", row)
+        _write_marker(dest, row["id"], files)
         self.publish("download.created", row)
         self._pump()
         return row
@@ -149,6 +186,7 @@ class DownloadManager:
                 part.unlink(missing_ok=True)
             self.db.execute("UPDATE downloads SET status = 'cancelled', updated_at = ? WHERE id = ?", [now(), did])
             # Remove the directory if nothing completed inside it.
+            _drop_marker(dest, did)
             if dest.exists() and dest.is_dir() and not any(p.is_file() for p in dest.rglob("*")):
                 shutil.rmtree(dest, ignore_errors=True)
         self.publish("download.updated", self.get(did) or {"id": did})
@@ -176,7 +214,7 @@ class DownloadManager:
         if not row:
             return
         dest = Path(row["dest"])
-        dest.mkdir(parents=True, exist_ok=True)
+        _write_marker(dest, did, row["files"])  # downloads created before markers existed
         done = 0
         last_emit = 0.0
         window: list[tuple[float, int]] = []
@@ -190,7 +228,8 @@ class DownloadManager:
                         continue
                     part = target.with_name(target.name + ".partial")
                     offset = part.stat().st_size if part.exists() else 0
-                    url = f"{HF}/{row['repo']}/resolve/{quote(row['revision'] or 'main', safe='')}/{quote(f['path'])}"
+                    repo, rev = f.get("repo") or row["repo"], f.get("revision") or row["revision"] or "main"
+                    url = f"{HF}/{repo}/resolve/{quote(rev, safe='')}/{quote(f.get('src') or f['path'])}"
                     headers = {"Range": f"bytes={offset}-"} if offset else {}
                     with client.stream("GET", url, headers=headers) as r:
                         if r.status_code in (401, 403):
@@ -227,6 +266,7 @@ class DownloadManager:
                         raise DownloadError(f"size mismatch for {f['path']} (got {part.stat().st_size}, expected {f['size']})")
                     part.replace(target)
                     done += target.stat().st_size
+            _drop_marker(dest, did)
             self.db.execute("UPDATE downloads SET status = 'completed', done_bytes = ?, updated_at = ? WHERE id = ?",
                             [done, now(), did])
             self._speed.pop(did, None)
