@@ -83,8 +83,10 @@ def _denoise_pipe(handle, cls_name: str = "WanPipeline"):
 
     pipe = handle.pipe
     cls = getattr(diffusers, cls_name)
-    if handle.memory_mode == "gpu":
-        return pipe if cls_name == "WanPipeline" else cls.from_pipe(pipe, dtype=pipe.transformer.dtype)
+    if handle.memory_mode == "gpu" and cls_name == "WanPipeline":
+        return pipe
+    # Built directly rather than with from_pipe, which casts every shared component to one dtype
+    # (undoing FP8 expert storage and the fp32 VAE).
     cache = pipe.__dict__.setdefault("_sarness_denoise", {})
     if cls_name not in cache:
         kwargs = dict(tokenizer=pipe.tokenizer, text_encoder=None, transformer=pipe.transformer,
@@ -131,6 +133,8 @@ def video_sampler(ctx, inputs, params):
     start, end = inputs.get("start_image"), inputs.get("end_image")
     if start is not None and "i2v" not in modes:
         raise WorkflowError(f"{handle.info.get('name')} does not support image-to-video")
+    if start is None and "t2v" not in modes:
+        raise WorkflowError(f"{handle.info.get('name')} needs a start frame (image-to-video only)")
     if end is not None and not caps.get("end_frame"):
         raise WorkflowError(f"{handle.info.get('name')} does not support end frames")
 

@@ -92,12 +92,14 @@ class PaintbrushHandler:
             raise NeedVram(REFINE_LOAD_MB, free, "The refine model")
         from diffusers import ControlNetModel, StableDiffusionControlNetImg2ImgPipeline, UniPCMultistepScheduler
 
+        from ...runtime.models import fast_load, load_pipeline
+
         t0 = time.perf_counter()
         cn = ControlNetModel.from_pretrained(self.paths["controlnet-seg"], dtype=self.dtype, variant="fp16",
-                                             use_safetensors=True)
-        pipe = StableDiffusionControlNetImg2ImgPipeline.from_pretrained(
-            self.paths["sd15"], controlnet=cn, dtype=self.dtype, variant="fp16", use_safetensors=True,
-            safety_checker=None, feature_extractor=None, requires_safety_checker=False)
+                                             use_safetensors=True, **fast_load())
+        pipe = load_pipeline(
+            StableDiffusionControlNetImg2ImgPipeline, self.paths["sd15"], self.dtype, controlnet=cn, variant="fp16",
+            use_safetensors=True, safety_checker=None, feature_extractor=None, requires_safety_checker=False)
         pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
         pipe.to(self.device)
         pipe.unet.to(memory_format=self.torch.channels_last)

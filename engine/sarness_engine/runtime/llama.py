@@ -296,6 +296,10 @@ class LlamaServer:
                 args += ["--fit", "on", "--fit-target", str(fit_target_mb)]
             else:
                 args += ["-ngl", str(gpu_layers)]
+            if any(g.get("unified_memory") for g in gpus()):
+                # Unified memory (GB10): copying an mmap'd model into GPU buffers faults it in page by
+                # page on one core; reading it up front loads several times faster.
+                args += ["--no-mmap"]
             if mmproj:
                 args += ["--mmproj", mmproj]
             mtp = (model.get("meta") or {}).get("mtp")

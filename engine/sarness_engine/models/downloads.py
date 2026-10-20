@@ -72,9 +72,16 @@ class DownloadManager:
         self._lock = threading.Lock()
 
     # ----------------------------------------------------------------- API
-    def recover(self) -> None:
-        self.db.execute("UPDATE downloads SET status = 'paused', updated_at = ? WHERE status IN ('downloading', 'queued')",
-                        [now()])
+    def recover(self, resume: bool = True) -> None:
+        """After a restart, downloads that were running or waiting continue on their own, oldest first
+        (finished files are kept and partial ones resume). With resume=False they are paused instead.
+        Downloads the user paused stay paused."""
+        if resume:
+            self.db.execute("UPDATE downloads SET status = 'queued', updated_at = ? WHERE status = 'downloading'", [now()])
+            self._pump()
+        else:
+            self.db.execute("UPDATE downloads SET status = 'paused', updated_at = ? WHERE status IN ('downloading', 'queued')",
+                            [now()])
 
     def list(self) -> list[dict[str, Any]]:
         rows = self.db.all("SELECT * FROM downloads ORDER BY created_at DESC LIMIT 200")

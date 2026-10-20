@@ -344,3 +344,79 @@ def test_audio_is_muxed_into_mp4(tmp_path):
                            capture_output=True, text=True).stderr
     assert "Audio: aac" in probe and "Video: h264" in probe
     assert not list(tmp_path.glob("*.wav")) and not list(tmp_path.glob("*.muxed.*"))
+
+
+def test_downloads_resume_after_restart_oldest_first(tmp_path):
+    from sarness_engine.models.downloads import DownloadManager
+
+    db = Database(tmp_path / "d.db")
+    for i, status in enumerate(["downloading", "queued", "paused", "queued", "completed"]):
+        db.insert("downloads", {"id": f"d{i}", "model_id": f"m{i}", "name": f"m{i}", "category": "image", "repo": "r",
+                                "revision": "main", "files": [], "dest": str(tmp_path / f"m{i}"), "total_bytes": 1,
+                                "done_bytes": 0, "status": status, "meta": {}, "created_at": i, "updated_at": i})
+    started = []
+    dm = DownloadManager(db, lambda *a: None, lambda: "", lambda r: None, max_parallel=2)
+    dm._run = lambda did, stop: started.append(did)
+    dm.recover()
+    for t in list(dm._threads.values()):
+        t.join(5)
+    assert started == ["d0", "d1"], "interrupted and waiting downloads continue in their original order"
+    status = {r["id"]: r["status"] for r in db.all("SELECT id, status FROM downloads")}
+    assert status["d2"] == "paused" and status["d3"] == "queued" and status["d4"] == "completed"
+
+    db.execute("UPDATE downloads SET status = 'downloading' WHERE id IN ('d0', 'd1')")
+    DownloadManager(db, lambda *a: None, lambda: "", lambda r: None).recover(resume=False)
+    status = {r["id"]: r["status"] for r in db.all("SELECT id, status FROM downloads")}
+    assert [status[k] for k in ("d0", "d1", "d3")] == ["paused"] * 3
+
+
+def test_unified_memory_loads_every_component_without_mmap(tmp_path, monkeypatch):
+    import transformers
+
+    from sarness_engine.runtime import models as rm
+
+    (tmp_path / "text_encoder").mkdir()
+    (tmp_path / "model_index.json").write_text(
+        '{"_class_name": "X", "text_encoder": ["transformers", "CLIPTextModel"], "tokenizer": ["transformers", "CLIPTokenizer"],'
+        ' "unet": ["diffusers", "UNet2DConditionModel"], "safety_checker": [null, null]}')
+    calls = []
+    monkeypatch.setattr(transformers.CLIPTextModel, "from_pretrained",
+                        classmethod(lambda c, p, **kw: calls.append(("te", kw)) or "TE"))
+
+    class Pipe:
+        @classmethod
+        def from_pretrained(cls, p, **kw):
+            calls.append(("pipe", kw))
+            return "PIPE"
+
+    monkeypatch.setattr(rm, "unified_memory", lambda: True)
+    assert rm.load_pipeline(Pipe, tmp_path, "bf16", variant="fp16") == "PIPE"
+    assert calls[0] == ("te", {"subfolder": "text_encoder", "dtype": "bf16", "variant": None, "disable_mmap": True})
+    assert calls[1][1] == {"dtype": "bf16", "disable_mmap": True, "variant": "fp16", "text_encoder": "TE"}
+
+    calls.clear()
+    monkeypatch.setattr(rm, "unified_memory", lambda: False)
+    rm.load_pipeline(Pipe, tmp_path, "bf16")
+    assert calls == [("pipe", {"dtype": "bf16"})], "discrete GPUs load exactly as before"
+    assert rm.fast_load() == {}
+
+
+def test_llama_reads_model_up_front_on_unified_memory(tmp_path, monkeypatch):
+    seen = {}
+
+    class Stop(Exception):
+        pass
+
+    def fake_popen(args, **kw):
+        seen["args"] = args
+        raise Stop
+
+    rt = SimpleNamespace(binary=lambda: "/bin/llama-server", version=lambda: "x", env=lambda: {})
+    srv = llama.LlamaServer.__new__(llama.LlamaServer)
+    monkeypatch.setattr(llama.subprocess, "Popen", fake_popen)
+    for unified in (True, False):
+        monkeypatch.setattr(llama, "gpus", lambda: [{"unified_memory": unified}])
+        srv.__init__(rt, tmp_path)
+        with pytest.raises(Stop):
+            srv.load({"id": "m", "path": str(tmp_path / "m.gguf")}, ctx=4096, gpu_layers=999, flash_attn=True)
+        assert ("--no-mmap" in seen["args"]) is unified

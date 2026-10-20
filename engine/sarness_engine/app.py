@@ -58,7 +58,7 @@ def create_app(cfg: EngineConfig, *, start_background: bool = True, start_snp: b
         app.state.sarness = st
         st.bus.bind_loop(asyncio.get_running_loop())
         st.jobs.recover()
-        st.downloads.recover()
+        st.downloads.recover(resume=start_background)
         await asyncio.to_thread(st.registry.scan)
         tasks = []
         await st.experiments.startup()
