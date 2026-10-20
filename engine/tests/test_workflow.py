@@ -105,6 +105,22 @@ def test_validation_unknown_model_and_category():
     assert any("not installed" in i.message for i in wf.validate(g, lookup))
 
 
+def test_validation_checks_frames_against_the_video_model():
+    models = {**MODELS,
+              "i2v": {"id": "i2v", "name": "Wan I2V", "category": "video", "family": "wan",
+                      "capabilities": {"modes": ["i2v"]}},
+              "both": {"id": "both", "name": "H3", "category": "video", "family": "wan",
+                       "capabilities": {"modes": ["t2v", "i2v"], "end_frame": True}}}
+    msgs = lambda simple: [i.message for i in wf.validate(templates.video_workflow(simple), models.get)]
+    assert msgs({"model": "i2v", "prompt": "x"}) == ["Wan I2V needs a start frame (image-to-video only)"]
+    assert msgs({"model": "i2v", "prompt": "x", "start_image": "f_1"}) == []
+    assert msgs({"model": "wan", "prompt": "x", "start_image": "f_1"}) == ["Wan does not support image-to-video"]
+    assert msgs({"model": "i2v", "prompt": "x", "start_image": "f_1", "end_image": "f_2"}) == \
+        ["Wan I2V does not support end frames"]
+    assert msgs({"model": "both", "prompt": "x"}) == msgs({"model": "both", "prompt": "x", "start_image": "f_1",
+                                                           "end_image": "f_2"}) == []
+
+
 def test_cycle_detected():
     g = G([N("a", "test.add"), N("b", "test.add"), N("s", "test.sink")],
           [E("a", "v", "b", "a"), E("b", "v", "a", "a"), E("b", "v", "s", "a")])

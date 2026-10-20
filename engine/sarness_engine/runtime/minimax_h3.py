@@ -140,9 +140,14 @@ def load_text_encoder(model_dir: Path, device: Any) -> nn.Module:
 
     te_dir = model_dir / "text_encoder"
     config = AutoConfig.from_pretrained(str(te_dir))
+    full_depth = config.text_config.num_hidden_layers
     config.text_config.num_hidden_layers = TEXT_LAYERS
     with init_empty_weights(include_buffers=False):
         model = Qwen3VLForConditionalGeneration._from_config(config, dtype=torch.bfloat16)
+    # The layers are built by now and run as `enumerate(self.layers)`. diffusers refuses a conditioner of
+    # exactly 50 layers because its last hidden state would be post-norm; the norm below is removed, so
+    # report the published depth.
+    model.config.text_config.num_hidden_layers = full_depth
     # Never used by H3 (it reads hidden states, not logits), and with the last layers gone the final
     # norm would turn hidden_states[50] into a normalized output it was not trained on.
     model.lm_head = nn.Identity()

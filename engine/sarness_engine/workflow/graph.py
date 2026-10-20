@@ -134,6 +134,9 @@ def validate(graph: dict[str, Any], model_lookup: ModelLookup | None = None) -> 
             if not sock.optional and (nid, sock.name) not in seen_inputs:
                 issues.append(Issue(f"required input '{sock.label or sock.name}' is not connected", nid))
 
+    if model_lookup:
+        issues += _video_frame_issues(by_id, edges, model_lookup)
+
     try:
         order(graph)
     except ValueError as exc:
@@ -141,6 +144,32 @@ def validate(graph: dict[str, Any], model_lookup: ModelLookup | None = None) -> 
 
     if not any(registry.get(n["type"]) and registry.get(n["type"]).output_node for n in by_id.values()):
         issues.append(Issue("workflow has no output node (add Save Image or Save Video)"))
+    return issues
+
+
+def _video_frame_issues(by_id: dict[str, dict[str, Any]], edges: list[dict[str, Any]],
+                        model_lookup: ModelLookup) -> list[Issue]:
+    """Start and end frames against what the loaded video model accepts, so a job is refused before
+    anything loads (the sampler checks the same again)."""
+    issues: list[Issue] = []
+    into = {(e.get("target"), e.get("target_input")): e.get("source") for e in edges}
+    for nid, n in by_id.items():
+        if n.get("type") != "sampler.video":
+            continue
+        loader = by_id.get(into.get((nid, "model")))
+        model = loader and (loader.get("params") or {}).get("model")
+        info = model_lookup(model) if model else None
+        if not info:
+            continue
+        caps = info.get("capabilities") or {}
+        modes = caps.get("modes") or ["t2v"]
+        has_start = (nid, "start_image") in into
+        if has_start and "i2v" not in modes:
+            issues.append(Issue(f"{info.get('name')} does not support image-to-video", nid))
+        if not has_start and "t2v" not in modes:
+            issues.append(Issue(f"{info.get('name')} needs a start frame (image-to-video only)", nid))
+        if (nid, "end_image") in into and not caps.get("end_frame"):
+            issues.append(Issue(f"{info.get('name')} does not support end frames", nid))
     return issues
 
 
