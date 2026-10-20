@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import os
 import re
@@ -234,6 +235,20 @@ def cuda_architecture() -> str | None:
     return f"{num}a-real" if num >= 90 else f"{num}-real"
 
 
+@functools.lru_cache(maxsize=8)
+def no_mmap_args(binary: str) -> list[str]:
+    """The flag that makes this llama-server read the model instead of mapping it (an unknown flag
+    stops llama-server from starting). gpt-oss-120b on GB10: mmap 31-66 s, ``none`` 12 s, ``dio``
+    (direct I/O, falls back when unavailable) 9 s; older builds only have ``--no-mmap``."""
+    try:
+        text = subprocess.run([binary, "--help"], capture_output=True, text=True, timeout=30).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if "--load-mode" in text:
+        return ["--load-mode", "dio" if "dio:" in text else "none"]
+    return ["--no-mmap"] if "--no-mmap" in text else []
+
+
 class LlamaServer:
     """One managed llama-server process serving one model."""
 
@@ -299,7 +314,7 @@ class LlamaServer:
             if any(g.get("unified_memory") for g in gpus()):
                 # Unified memory (GB10): copying an mmap'd model into GPU buffers faults it in page by
                 # page on one core; reading it up front loads several times faster.
-                args += ["--no-mmap"]
+                args += no_mmap_args(str(b))
             if mmproj:
                 args += ["--mmproj", mmproj]
             mtp = (model.get("meta") or {}).get("mtp")

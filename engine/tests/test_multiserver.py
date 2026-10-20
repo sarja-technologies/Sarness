@@ -411,12 +411,18 @@ def test_llama_reads_model_up_front_on_unified_memory(tmp_path, monkeypatch):
         seen["args"] = args
         raise Stop
 
-    rt = SimpleNamespace(binary=lambda: "/bin/llama-server", version=lambda: "x", env=lambda: {})
-    srv = llama.LlamaServer.__new__(llama.LlamaServer)
+    helps = {"/bin/new": "-lm,   --load-mode MODE   model loading mode\n - dio: use DirectIO if available",
+             "/bin/mid": "-lm,   --load-mode MODE   model loading mode", "/bin/old": "--mmap, --no-mmap", "/bin/x": ""}
+    monkeypatch.setattr(llama.subprocess, "run", lambda args, **kw: SimpleNamespace(stdout=helps[args[0]]))
     monkeypatch.setattr(llama.subprocess, "Popen", fake_popen)
-    for unified in (True, False):
+    llama.no_mmap_args.cache_clear()
+    srv = llama.LlamaServer.__new__(llama.LlamaServer)
+    for binary, unified, expect in [("/bin/new", True, ["--load-mode", "dio"]), ("/bin/mid", True, ["--load-mode", "none"]),
+                                    ("/bin/old", True, ["--no-mmap"]), ("/bin/x", True, []), ("/bin/new", False, [])]:
         monkeypatch.setattr(llama, "gpus", lambda: [{"unified_memory": unified}])
-        srv.__init__(rt, tmp_path)
+        srv.__init__(SimpleNamespace(binary=lambda: binary, version=lambda: "x", env=lambda: {}), tmp_path)
         with pytest.raises(Stop):
             srv.load({"id": "m", "path": str(tmp_path / "m.gguf")}, ctx=4096, gpu_layers=999, flash_attn=True)
-        assert ("--no-mmap" in seen["args"]) is unified
+        args = seen["args"]
+        assert [a for a in args if a in ("--load-mode", "dio", "none", "--no-mmap")] == expect, binary
+    llama.no_mmap_args.cache_clear()
