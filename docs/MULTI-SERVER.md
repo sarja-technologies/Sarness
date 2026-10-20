@@ -33,8 +33,10 @@ For each request the desktop picks a server in this order. A model is never repl
 3. **Availability.** The server must be online.
 4. **Preference.** A per-model preferred server, then servers marked as preferred for the workload (chat, code,
    vision, image, video). With the fallback policy *Wait for the preferred server*, other servers are not used.
-5. **Free compute.** Servers below their queue soft limit first, then a server with the model loaded, then one
-   where it fits in free memory (unified memory counts available system RAM).
+   A server whose image/video queue has reached its soft limit loses its preference, so new work starts elsewhere
+   instead of waiting behind it.
+5. **Free compute.** A server with the model loaded, then one where it fits in free memory (unified memory counts
+   available system RAM).
 6. **Queue.** Fewer running and queued jobs.
 7. **Performance.** Lower observed seconds per job for that model, once both servers have been measured.
 8. **Fallback.** The primary server, then name order.
