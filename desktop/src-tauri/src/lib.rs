@@ -414,7 +414,7 @@ async fn connect(app: AppHandle, core: State<'_, Core>, id: String) -> CmdResult
     );
     let mut st = ProfileStore::load();
     st.mark_connected(&id, true);
-    if st.active.as_ref().is_none_or(|a| !st.connected.contains(a)) {
+    if st.active.as_ref().map_or(true, |a| !st.connected.contains(a)) {
         st.active = Some(id.clone());
     }
     if let Some(primary) = st.active.clone() {

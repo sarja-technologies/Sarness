@@ -35,10 +35,13 @@ pub async fn run(args: Vec<String>) -> Result<(), String> {
     Ok(())
 }
 
+/// Command-line style overrides (`--transport` → value) applied to a stored profile.
+type Overrides<'a> = &'a dyn Fn(&str) -> Option<String>;
+
 async fn connect_profile(
     shared: &ProxyShared,
     mut profile: config::Profile,
-    overrides: Option<&dyn Fn(&str) -> Option<String>>,
+    overrides: Option<Overrides<'_>>,
 ) -> Result<Option<ssh::Tunnel>, String> {
     let none = |_: &str| None;
     let flag: &dyn Fn(&str) -> Option<String> = overrides.unwrap_or(&none);

@@ -89,7 +89,7 @@ impl ProxyShared {
             }
         }
         let mut primary = self.primary.write().await;
-        if primary.as_deref().is_none_or(|p| !engines.contains_key(p)) {
+        if primary.as_deref().map_or(true, |p| !engines.contains_key(p)) {
             *primary = if engines.contains_key(id) { Some(id.to_string()) } else { engines.keys().min().cloned() };
         }
     }
@@ -147,10 +147,11 @@ pub fn migrate_legacy_cache(cache_dir: &Path, engine_id: &str) -> usize {
     let Ok(rd) = std::fs::read_dir(&media) else { return 0 };
     let mut moved = 0;
     for e in rd.flatten() {
-        if e.file_type().map(|t| t.is_file()).unwrap_or(false) {
-            if std::fs::create_dir_all(&target).is_ok() && std::fs::rename(e.path(), target.join(e.file_name())).is_ok() {
-                moved += 1;
-            }
+        if e.file_type().map(|t| t.is_file()).unwrap_or(false)
+            && std::fs::create_dir_all(&target).is_ok()
+            && std::fs::rename(e.path(), target.join(e.file_name())).is_ok()
+        {
+            moved += 1;
         }
     }
     moved
