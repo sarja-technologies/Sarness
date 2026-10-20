@@ -24,8 +24,15 @@ CHUNK = 1 << 20
 SAFETY_MARGIN = 2 * 1024**3  # keep 2 GiB free after a download
 
 
+RETRY_DELAYS = (2, 5, 10, 20, 30, 60, 60, 60)  # seconds between attempts after a dropped connection
+
+
 class DownloadError(Exception):
     pass
+
+
+class _Transient(Exception):
+    """A failure worth retrying from where the file stopped: dropped connection, timeout, 429 or 5xx."""
 
 
 MARKER_PREFIX = ".sarness-downloading."
@@ -227,41 +234,52 @@ class DownloadManager:
                         done += target.stat().st_size
                         continue
                     part = target.with_name(target.name + ".partial")
-                    offset = part.stat().st_size if part.exists() else 0
                     repo, rev = f.get("repo") or row["repo"], f.get("revision") or row["revision"] or "main"
                     url = f"{HF}/{repo}/resolve/{quote(rev, safe='')}/{quote(f.get('src') or f['path'])}"
-                    headers = {"Range": f"bytes={offset}-"} if offset else {}
-                    with client.stream("GET", url, headers=headers) as r:
-                        if r.status_code in (401, 403):
-                            raise DownloadError("access denied (gated model?) — add a Hugging Face token in Settings")
-                        if r.status_code == 416:
-                            offset = 0
-                        elif r.status_code == 200 and offset:
-                            offset = 0  # server ignored Range; restart this file
-                        elif r.status_code not in (200, 206):
-                            raise DownloadError(f"HTTP {r.status_code} for {f['path']}")
-                        mode = "ab" if offset else "wb"
-                        with open(part, mode) as out:
-                            file_done = offset
-                            for chunk in r.iter_bytes(CHUNK):
-                                if stop.is_set():
-                                    raise _Paused()
-                                out.write(chunk)
-                                file_done += len(chunk)
-                                t = time.monotonic()
-                                window.append((t, len(chunk)))
-                                if t - last_emit > 0.5:
-                                    last_emit = t
-                                    window = [(a, b) for a, b in window if t - a < 5]
-                                    span = max(t - window[0][0], 0.5) if window else 1
-                                    speed = sum(b for _, b in window) / span
-                                    self._speed[did] = speed
-                                    cur = done + file_done
-                                    self.db.execute("UPDATE downloads SET done_bytes = ?, updated_at = ? WHERE id = ?",
-                                                    [cur, now(), did])
-                                    self.publish("download.progress", {"id": did, "model_id": row["model_id"],
-                                                                       "done_bytes": cur, "total_bytes": row["total_bytes"],
-                                                                       "speed_bps": speed, "file": f["path"]})
+                    for attempt in range(len(RETRY_DELAYS) + 1):
+                        offset = part.stat().st_size if part.exists() else 0
+                        headers = {"Range": f"bytes={offset}-"} if offset else {}
+                        try:
+                            with client.stream("GET", url, headers=headers) as r:
+                                if r.status_code in (401, 403):
+                                    raise DownloadError("access denied (gated model?) — add a Hugging Face token in Settings")
+                                if r.status_code == 416:
+                                    offset = 0
+                                elif r.status_code == 200 and offset:
+                                    offset = 0  # server ignored Range; restart this file
+                                elif r.status_code == 429 or r.status_code >= 500:
+                                    raise _Transient(f"HTTP {r.status_code} for {f['path']}")
+                                elif r.status_code not in (200, 206):
+                                    raise DownloadError(f"HTTP {r.status_code} for {f['path']}")
+                                mode = "ab" if offset else "wb"
+                                with open(part, mode) as out:
+                                    file_done = offset
+                                    for chunk in r.iter_bytes(CHUNK):
+                                        if stop.is_set():
+                                            raise _Paused()
+                                        out.write(chunk)
+                                        file_done += len(chunk)
+                                        t = time.monotonic()
+                                        window.append((t, len(chunk)))
+                                        if t - last_emit > 0.5:
+                                            last_emit = t
+                                            window = [(a, b) for a, b in window if t - a < 5]
+                                            span = max(t - window[0][0], 0.5) if window else 1
+                                            speed = sum(b for _, b in window) / span
+                                            self._speed[did] = speed
+                                            cur = done + file_done
+                                            self.db.execute("UPDATE downloads SET done_bytes = ?, updated_at = ? WHERE id = ?",
+                                                            [cur, now(), did])
+                                            self.publish("download.progress", {"id": did, "model_id": row["model_id"],
+                                                                               "done_bytes": cur, "total_bytes": row["total_bytes"],
+                                                                               "speed_bps": speed, "file": f["path"]})
+                            break
+                        except (_Transient, httpx.TransportError, ConnectionError) as exc:
+                            if attempt == len(RETRY_DELAYS):
+                                raise DownloadError(f"{exc} (gave up after {attempt + 1} attempts)") from exc
+                            log.warning("download %s: %s; retrying %s in %ss", did, exc, f["path"], RETRY_DELAYS[attempt])
+                            if stop.wait(RETRY_DELAYS[attempt]):
+                                raise _Paused() from None
                     if f["size"] and part.stat().st_size != f["size"]:
                         raise DownloadError(f"size mismatch for {f['path']} (got {part.stat().st_size}, expected {f['size']})")
                     part.replace(target)

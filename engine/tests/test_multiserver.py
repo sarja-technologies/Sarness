@@ -268,6 +268,7 @@ class _FakeQwenPipe:
 
 
 def test_native_image_family_runs_end_to_end():
+    pytest.importorskip("torch")
     from sarness_engine.runtime.models import ModelHandle
     from sarness_engine.workflow.nodes import diffusion as d
     from sarness_engine.workflow.types import WorkflowError
@@ -294,6 +295,7 @@ def test_native_image_family_runs_end_to_end():
 
 
 def test_ltx2_sampler_returns_frames_and_audio(monkeypatch):
+    pytest.importorskip("torch")
     import numpy as np
     from PIL import Image
 
@@ -325,6 +327,8 @@ def test_ltx2_sampler_returns_frames_and_audio(monkeypatch):
 
 def test_audio_is_muxed_into_mp4(tmp_path):
     import subprocess
+
+    pytest.importorskip("imageio_ffmpeg")
 
     import imageio.v2 as iio
     import imageio_ffmpeg
@@ -370,8 +374,57 @@ def test_downloads_resume_after_restart_oldest_first(tmp_path):
     assert [status[k] for k in ("d0", "d1", "d3")] == ["paused"] * 3
 
 
+def test_download_retries_dropped_connections_from_where_the_file_stopped(tmp_path, monkeypatch):
+    import httpx
+
+    from sarness_engine.models import downloads as dl
+
+    body = bytes(range(256)) * 40
+    seen = []
+
+    class Drops(httpx.SyncByteStream):
+        def __iter__(self):
+            yield body[:1000]
+            raise httpx.ReadError("[Errno 104] Connection reset by peer")
+
+    def handler(request):
+        rng = request.headers.get("range")
+        seen.append(rng)
+        if len(seen) == 1:
+            return httpx.Response(200, stream=Drops())
+        if len(seen) == 2:
+            return httpx.Response(503)
+        start = int(rng.split("=")[1].rstrip("-"))
+        return httpx.Response(206, content=body[start:])
+
+    monkeypatch.setattr(dl, "_client", lambda token: httpx.Client(transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(dl, "RETRY_DELAYS", (0, 0))
+    monkeypatch.setattr(dl, "CHUNK", 100)  # httpx hands out whole chunks; keep the 1000 bytes before the drop
+    db = Database(tmp_path / "d.db")
+    dest = tmp_path / "m"
+    db.insert("downloads", {"id": "d0", "model_id": "m", "name": "m", "category": "image", "repo": "r",
+                            "revision": "main", "files": [{"path": "w.safetensors", "size": len(body)}],
+                            "dest": str(dest), "total_bytes": len(body), "done_bytes": 0, "status": "downloading",
+                            "meta": {}, "created_at": 0, "updated_at": 0})
+    dm = dl.DownloadManager(db, lambda *a: None, lambda: "", lambda r: None)
+    dm._pump = lambda: None
+    dm._run("d0", threading.Event())
+    assert seen == [None, "bytes=1000-", "bytes=1000-"], "each retry continues from the partial file"
+    assert dm.get("d0")["status"] == "completed" and (dest / "w.safetensors").read_bytes() == body
+
+    seen.clear()
+    (dest / "w.safetensors").unlink()
+    db.execute("UPDATE downloads SET status = 'downloading' WHERE id = 'd0'")
+    monkeypatch.setattr(dl, "_client", lambda token: httpx.Client(transport=httpx.MockTransport(
+        lambda request: seen.append(1) or httpx.Response(503))))
+    dm._run("d0", threading.Event())
+    row = dm.get("d0")
+    assert len(seen) == 3 and row["status"] == "failed" and "gave up after 3 attempts" in row["error"]
+
+
 def test_unified_memory_loads_every_component_without_mmap(tmp_path, monkeypatch):
-    import transformers
+    pytest.importorskip("torch")
+    transformers = pytest.importorskip("transformers")
 
     from sarness_engine.runtime import models as rm
 
