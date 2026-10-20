@@ -10,14 +10,14 @@
   import Tiler from './lib/workspace/Tiler.svelte';
   import { applyTheme } from './lib/stores/theme';
   import { focusPane, startNewConversation, toggleMaximize, ws } from './lib/stores/panes.svelte';
-  import { syncServerConversations } from './lib/stores/sessions.svelte';
+  import { adoptLegacySessions, syncServerConversations } from './lib/stores/sessions.svelte';
   import Library from './lib/views/Library.svelte';
   import Models from './lib/views/Models.svelte';
   import Settings from './lib/views/Settings.svelte';
-  import { conn, initConnection } from './lib/stores/connection.svelte';
+  import { conn, initConnection, onEvent } from './lib/stores/connection.svelte';
   import { prefs, persistPrefs, type View } from './lib/stores/prefs.svelte';
-  import { loadJobs, wireJobEvents } from './lib/stores/jobs.svelte';
-  import { loadModels, wireModelEvents } from './lib/stores/models.svelte';
+  import { wireJobEvents } from './lib/stores/jobs.svelte';
+  import { wireModelEvents } from './lib/stores/models.svelte';
   import { loadProjects, wireProjectEvents } from './lib/stores/projects.svelte';
   import ExperimentsView from './lib/experiments/ExperimentsView.svelte';
   import { enterExperiments, loadCatalogue, wireExperimentEvents } from './lib/experiments/store.svelte';
@@ -35,13 +35,24 @@
     }
   });
 
-  // (Re)load engine data whenever we come online with a (new) server.
+  // Projects live on the primary server: reload them when it comes online or changes. Models, jobs and
+  // conversations load per server as each one connects (connection.restored).
+  let adopted = false;
   $effect(() => {
     const key = `${conn.state}:${conn.activeId}`;
     if (conn.state === 'online' && loadedFor !== key) {
       loadedFor = key;
-      Promise.allSettled([loadJobs(), loadModels(), loadProjects(), syncServerConversations(), loadCatalogue()]);
+      // Conversations saved before multi-server support belong to the server connected then.
+      if (!adopted && conn.activeId) {
+        adopted = true;
+        adoptLegacySessions(conn.activeId);
+      }
+      Promise.allSettled([loadProjects(), loadCatalogue()]);
     }
+  });
+  // (The model and job stores reload themselves on the same event.)
+  onEvent('connection.restored', (e) => {
+    syncServerConversations(e.engine).catch(() => {});
   });
 
   onMount(() => {

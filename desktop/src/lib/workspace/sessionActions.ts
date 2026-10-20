@@ -1,7 +1,7 @@
 // Conversation-level actions shared by the pane header and the sidebar.
 import { invoke } from '@tauri-apps/api/core';
 import { save as saveDialog } from '@tauri-apps/plugin-dialog';
-import { api } from '../api/client';
+import { apiFor } from '../api/client';
 import { isTauri } from '../api/transport';
 import { dropAgent } from '../agent/state.svelte';
 import { removeSession } from '../stores/sessions.svelte';
@@ -14,7 +14,7 @@ export async function renameSession(s: Session) {
   if (!t) return;
   s.title = t;
   s.titled = true;
-  if (s.convId) api.patch(`/v1/chat/conversations/${s.convId}`, { title: t }).catch(() => {});
+  if (s.convId) apiFor(s.engine).patch(`/v1/chat/conversations/${s.convId}`, { title: t }).catch(() => {});
 }
 
 /** Returns true when the conversation was deleted. Generated media stays in the Library. */
@@ -25,11 +25,13 @@ export async function deleteSession(s: Session): Promise<boolean> {
   const note = ' Coding task history is removed from Sarness; files in your project folders are never touched.';
   if (!(await confirmDialog(`Delete “${s.title}”?`, body + (s.hasAgent ? note : ''), { danger: true, confirmLabel: 'Delete' }))) return false;
   try {
-    if (s.convId) await api.del(`/v1/chat/conversations/${s.convId}`);
+    if (s.convId) await apiFor(s.engine).del(`/v1/chat/conversations/${s.convId}`);
   } catch (e) {
     toastError(e, 'Could not delete the conversation');
     return false;
   }
+  // Copies left on other servers when the conversation moved go too (best effort: a server may be offline).
+  for (const f of s.formerConvs ?? []) apiFor(f.engine).del(`/v1/chat/conversations/${f.convId}`).catch(() => {});
   dropAgent(s.id);
   removeSession(s.id);
   return true;
@@ -39,8 +41,8 @@ export async function exportSession(s: Session, fmt: 'json' | 'md') {
   if (!s.convId) return toast('info', 'Nothing to export yet', 'Only chat and code turns are exported; generated media lives in the Library.');
   try {
     const data = fmt === 'md'
-      ? await api.text(`/v1/chat/conversations/${s.convId}/export?format=md`)
-      : JSON.stringify(await api.get(`/v1/chat/conversations/${s.convId}/export`), null, 2);
+      ? await apiFor(s.engine).text(`/v1/chat/conversations/${s.convId}/export?format=md`)
+      : JSON.stringify(await apiFor(s.engine).get(`/v1/chat/conversations/${s.convId}/export`), null, 2);
     const name = `${s.title.replace(/[^\w.-]+/g, '-').slice(0, 60)}.${fmt}`;
     if (isTauri) {
       const dest = await saveDialog({ defaultPath: name });

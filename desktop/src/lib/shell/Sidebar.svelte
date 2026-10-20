@@ -1,6 +1,6 @@
 <script lang="ts">
   import { Boxes, Briefcase, ChevronsUpDown, FlaskConical, FolderPlus, Library, PanelLeftClose, PanelLeftOpen, Search, Server, Settings, SquarePen } from '@lucide/svelte';
-  import { api, qs } from '../api/client';
+  import { apiFor, qs } from '../api/client';
   import type { Conversation } from '../api/types';
   import logo from '../assets/logo.svg';
   import { conn } from '../stores/connection.svelte';
@@ -56,7 +56,10 @@
     }
     timer = setTimeout(async () => {
       try {
-        hits = new Set((await api.get<Conversation[]>(`/v1/chat/conversations${qs({ q: term })}`)).map((c) => c.id));
+        // Search every online server; conversation ids are unique across servers.
+        const ids = Object.values(conn.engines).filter((e) => e.state === 'online').map((e) => e.id);
+        const found = await Promise.allSettled(ids.map((id) => apiFor(id).get<Conversation[]>(`/v1/chat/conversations${qs({ q: term })}`)));
+        hits = new Set(found.flatMap((r) => (r.status === 'fulfilled' ? r.value.map((c) => c.id) : [])));
       } catch {
         hits = new Set();
       }

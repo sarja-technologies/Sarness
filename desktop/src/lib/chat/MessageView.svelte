@@ -16,11 +16,13 @@
     sibs: Message[];
     streaming: boolean;
     modelName?: string;
+    /** Server storing the conversation (its attachments live there). */
+    engine?: string | null;
     onswitch: (id: string) => void;
     onregenerate: () => void;
     onedit: (text: string) => void;
   }
-  let { m, sibs, streaming, modelName = '', onswitch, onregenerate, onedit }: Props = $props();
+  let { m, sibs, streaming, modelName = '', engine = null, onswitch, onregenerate, onedit }: Props = $props();
   let editing = $state(false);
   let draft = $state('');
   let copied = $state(false);
@@ -44,7 +46,7 @@
       <div class="atts">
         {#each m.attachments as a (a.id)}
           {#if a.mime.startsWith('image/')}
-            <img class="att" src={mediaUrl(a.url)} alt={a.name ?? ''} />
+            <img class="att" src={mediaUrl(a.url, engine)} alt={a.name ?? ''} />
           {:else}
             <span class="file"><FileText />{a.name ?? 'file'}</span>
           {/if}

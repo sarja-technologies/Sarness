@@ -1,11 +1,11 @@
 <script lang="ts">
   import { CircleCheck, Download } from '@lucide/svelte';
-  import { api } from '../../api/client';
   import { toastError } from '../../stores/toast.svelte';
   import Button from '../../ui/Button.svelte';
   import Progress from '../../ui/Progress.svelte';
   import { bytes } from '../../util/format';
   import { PB, type PaintSession } from './session.svelte';
+  import { xapi } from '../store.svelte';
 
   /** Lists the pretrained weights God's Paintbrush uses and installs the missing ones on the server. */
   let { session }: { session: PaintSession } = $props();
@@ -19,7 +19,7 @@
   async function install(ids?: string[]) {
     starting = true;
     try {
-      st.install = await api.post(`${PB}/install`, { components: ids ?? missing.map((c) => c.id) });
+      st.install = await xapi().post(`${PB}/install`, { components: ids ?? missing.map((c) => c.id) });
     } catch (e) {
       toastError(e, 'Could not start the download');
     } finally {
@@ -50,7 +50,7 @@
     <div class="progress">
       <span class="faint">Downloading {inst.component} · {bytes(inst.done_bytes)}{inst.total_bytes ? ` of ${bytes(inst.total_bytes)}` : ''}</span>
       <Progress value={pct} />
-      <Button size="sm" variant="ghost" onclick={() => api.post(`${PB}/install/cancel`)}>Cancel</Button>
+      <Button size="sm" variant="ghost" onclick={() => xapi().post(`${PB}/install/cancel`)}>Cancel</Button>
     </div>
   {:else}
     {#if inst.error}<p class="err selectable">The last download failed: {inst.error}</p>{/if}

@@ -20,7 +20,11 @@
   import { randomSeed } from '../util/seed';
 
   /** Image-mode settings. Only options the selected model supports are shown. */
-  let { s, model, setQuality }: { s: ImageSettings; model: InstalledModel | undefined; setQuality: (q: 'fast' | 'balanced' | 'best') => void } = $props();
+  let { s, model, setQuality, engine = null, files }: {
+    s: ImageSettings; model: InstalledModel | undefined; setQuality: (q: 'fast' | 'balanced' | 'best') => void;
+    /** Server that runs this image (LoRAs and uploads come from it), and where each input file lives. */
+    engine?: string | null; files?: Record<string, string>;
+  } = $props();
   let maskOpen = $state(false);
 
   const caps = $derived(model?.capabilities ?? {});
@@ -29,7 +33,7 @@
   const stepRange = $derived(limits.steps ?? [1, 100]);
   const cfgRange = $derived(limits.guidance ?? [0, 20]);
   const schedulerOptions = $derived([{ value: 'default', label: 'Model default' }, ...(caps.schedulers ?? []).map((x: string) => ({ value: x, label: x.replace(/_/g, ' ') }))]);
-  const loraModels = $derived(byCategory('lora'));
+  const loraModels = $derived(byCategory('lora', true, engine));
 </script>
 
 <div class="ctl">
@@ -56,7 +60,7 @@
 
   {#if caps.modes?.includes('img2img') !== false}
     <Field label="Reference image" hint={s.reference_image ? (s.mask_image ? 'Inpainting: only the masked area is regenerated.' : 'Image-to-image: lower strength keeps more of the reference.') : 'Optional. Paint a mask on it to inpaint.'}>
-      <ImageInput bind:fileId={s.reference_image} onpaint={caps.modes?.includes('inpaint') !== false ? () => (maskOpen = true) : undefined} painted={!!s.mask_image} />
+      <ImageInput bind:fileId={s.reference_image} {engine} {files} onpaint={caps.modes?.includes('inpaint') !== false ? () => (maskOpen = true) : undefined} painted={!!s.mask_image} />
     </Field>
     {#if s.reference_image && caps.denoise !== false}
       <Slider bind:value={s.denoise} min={0.05} max={1} step={0.01} label="Strength" format={(v) => v.toFixed(2)} />
@@ -117,7 +121,7 @@
 </div>
 
 {#if maskOpen && s.reference_image}
-  <MaskPainter bind:open={maskOpen} imageId={s.reference_image} bind:maskId={s.mask_image} />
+  <MaskPainter bind:open={maskOpen} imageId={s.reference_image} bind:maskId={s.mask_image} {files} />
 {/if}
 
 <style>

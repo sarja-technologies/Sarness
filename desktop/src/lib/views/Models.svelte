@@ -1,10 +1,10 @@
 <script lang="ts">
   import { Boxes, CircleAlert, CircleCheck, Cpu, Download, ExternalLink, HardDrive, Pause, Play, Power, RefreshCw, Search, Trash2, X, Zap } from '@lucide/svelte';
   import { openUrl } from '@tauri-apps/plugin-opener';
-  import { api, qs } from '../api/client';
+  import { apiFor, qs } from '../api/client';
   import type { CatalogEntry, Compatibility, Download as DL, HardwarePreset, HfInspect, HfSearchResult, InstalledModel } from '../api/types';
-  import { conn, onEvent } from '../stores/connection.svelte';
-  import { installCatalog, loadCatalog, loadModels, models, upsertDownload } from '../stores/models.svelte';
+  import { conn, engineList, onEvent, profileName } from '../stores/connection.svelte';
+  import { dropDownload, installCatalog, loadCatalog, loadModels, models, upsertDownload } from '../stores/models.svelte';
   import { toast, toastError } from '../stores/toast.svelte';
   import { isTauri } from '../api/transport';
   import Badge from '../ui/Badge.svelte';
@@ -20,6 +20,15 @@
   import { bytes, mib, rate } from '../util/format';
 
   let { active }: { active: boolean } = $props();
+
+  // Models are managed per server; with several connected, the header chooses which.
+  let server = $state<string | null>(null);
+  const srv = $derived(server && conn.engines[server] ? server : conn.activeId);
+  const api = $derived(apiFor(srv));
+  const mine = $derived(models.by[srv ?? ''] ?? { installed: [], downloads: [], chatModels: [], llm: null, loaded: false });
+  const sys = $derived(conn.engines[srv ?? '']?.system ?? null);
+  const servers = $derived(engineList().map((e) => ({ value: e.id as string | null, label: profileName(e.id), hint: e.caps?.gpu?.name ?? (e.state === 'online' ? '' : 'offline') })));
+  const mineEvent = (e: { engine?: string }) => (e.engine ?? conn.activeId) === srv;
   type Tab = 'installed' | 'catalog' | 'hf' | 'downloads' | 'runtimes';
   let tab = $state<Tab>('catalog');
   let presets = $state<HardwarePreset[]>([]);
@@ -27,6 +36,7 @@
   let runtimes = $state<any>(null);
   let llamaProgress = $state<{ done: number; total: number } | null>(null);
   let loadedOnce = false;
+  let shownFor: string | null = null;
   let catFilter = $state<string>('all');
 
   // Hugging Face
@@ -41,27 +51,35 @@
   $effect(() => {
     if (active && !loadedOnce && conn.state === 'online') {
       loadedOnce = true;
-      if (models.installed.length) tab = 'installed';
+      shownFor = srv;
+      if (mine.installed.length) tab = 'installed';
       refreshAll();
     }
+  });
+  $effect(() => {
+    const id = srv;
+    if (!loadedOnce || id === shownFor) return;
+    shownFor = id;
+    inspect = null;
+    refreshAll();
   });
 
   async function refreshAll() {
     try {
-      await Promise.all([loadCatalog(), loadModels()]);
+      await Promise.all([loadCatalog(srv), loadModels(srv)]);
       [presets, disk, runtimes] = await Promise.all([api.get('/v1/models/presets'), api.get('/v1/models/disk'), api.get('/v1/runtimes')]);
     } catch (e) {
       toastError(e, 'Could not load models');
     }
   }
 
-  onEvent('runtime.progress', (e) => (llamaProgress = { done: e.data.done, total: e.data.total }));
-  onEvent('runtime.installed', (e) => { llamaProgress = null; toast('success', 'llama.cpp installed', e.data.version); refreshAll(); });
-  onEvent('runtime.failed', (e) => { llamaProgress = null; toast('error', 'llama.cpp install failed', e.data.error); refreshAll(); });
-  onEvent('models.changed', () => { if (loadedOnce) api.get('/v1/models/disk').then((d) => (disk = d)).catch(() => {}); });
+  onEvent('runtime.progress', (e) => mineEvent(e) && (llamaProgress = { done: e.data.done, total: e.data.total }));
+  onEvent('runtime.installed', (e) => { if (!mineEvent(e)) return; llamaProgress = null; toast('success', 'llama.cpp installed', e.data.version); refreshAll(); });
+  onEvent('runtime.failed', (e) => { if (!mineEvent(e)) return; llamaProgress = null; toast('error', 'llama.cpp install failed', e.data.error); refreshAll(); });
+  onEvent('models.changed', (e) => { if (loadedOnce && mineEvent(e)) api.get('/v1/models/disk').then((d) => (disk = d)).catch(() => {}); });
 
-  const gpu = $derived(conn.system?.hardware.gpus[0]);
-  const activeDownloads = $derived(models.downloads.filter((d) => ['queued', 'downloading', 'paused'].includes(d.status)));
+  const gpu = $derived(sys?.hardware.gpus[0]);
+  const activeDownloads = $derived(mine.downloads.filter((d) => ['queued', 'downloading', 'paused'].includes(d.status)));
   const catalog = $derived(models.catalog.filter((c) => catFilter === 'all' || c.category === catFilter));
   const match = $derived(presets.find((p) => p.matches_this_server));
 
@@ -72,8 +90,8 @@
   async function action(d: DL, a: 'pause' | 'resume' | 'cancel' | 'dismiss') {
     try {
       const r = await api.post<DL>(`/v1/downloads/${d.id}/${a}`);
-      if (a === 'dismiss') models.downloads = models.downloads.filter((x) => x.id !== d.id);
-      else upsertDownload(r);
+      if (a === 'dismiss') dropDownload(srv!, d.id);
+      else upsertDownload({ ...r, engine: srv ?? undefined });
     } catch (e) {
       toastError(e);
     }
@@ -84,7 +102,7 @@
     try {
       await api.del(`/v1/models/${encodeURIComponent(m.id)}`);
       toast('success', 'Model removed', m.name);
-      loadModels();
+      loadModels(srv);
     } catch (e) {
       toastError(e, 'Could not delete model');
     }
@@ -94,7 +112,7 @@
     try {
       if (load) await api.post('/v1/llm/load', { model_id: m.id });
       else await api.post('/v1/llm/unload');
-      loadModels();
+      loadModels(srv);
     } catch (e) {
       toastError(e);
     }
@@ -129,7 +147,7 @@
     if (!inspect) return;
     try {
       const d = await api.post<DL>('/v1/models/install', { repo: inspect.repo, files, category: hfCategory, name: inspect.repo.split('/')[1] });
-      upsertDownload(d);
+      upsertDownload({ ...d, engine: srv ?? undefined });
       toast('info', 'Download started', inspect.repo);
       tab = 'downloads';
     } catch (e) {
@@ -152,8 +170,9 @@
 <div class="models">
   <header>
     <h1>Models</h1>
+    {#if servers.length > 1}<Select value={srv} options={servers} size="sm" onchange={(v) => (server = v)} />{/if}
     <Segmented bind:value={tab} items={[
-      { value: 'installed', label: `Installed${models.installed.length ? ` · ${models.installed.length}` : ''}` },
+      { value: 'installed', label: `Installed${mine.installed.length ? ` · ${mine.installed.length}` : ''}` },
       { value: 'catalog', label: 'Catalog' },
       { value: 'hf', label: 'Hugging Face' },
       { value: 'downloads', label: `Downloads${activeDownloads.length ? ` · ${activeDownloads.length}` : ''}` },
@@ -166,15 +185,15 @@
 
   <div class="body">
     {#if tab === 'installed'}
-      {#if !models.installed.length}
+      {#if !mine.installed.length}
         <Empty icon={Boxes} title="No models installed" body="Start with the catalog: it lists models that are known to work well on your hardware.">
           <Button variant="primary" onclick={() => (tab = 'catalog')}>Open catalog</Button>
         </Empty>
       {:else}
-        {#each Object.keys(catLabels).filter((c) => models.installed.some((m) => m.category === c)) as cat (cat)}
+        {#each Object.keys(catLabels).filter((c) => mine.installed.some((m) => m.category === c)) as cat (cat)}
           <h2 class="sect">{catLabels[cat]}</h2>
           <div class="list">
-            {#each models.installed.filter((m) => m.category === cat) as m (m.id)}
+            {#each mine.installed.filter((m) => m.category === cat) as m (m.id)}
               <div class="row card">
                 <div class="info">
                   <div class="name">{m.name}
@@ -205,7 +224,7 @@
         <div class="hw card">
           <Cpu />
           <div>
-            <strong>{gpu.name} · {mib(gpu.vram_total_mb)} VRAM · {mib(conn.system?.hardware.memory.total_mb)} RAM</strong>
+            <strong>{#if gpu.unified_memory}{gpu.name} · {mib(gpu.vram_total_mb)} unified memory{:else}{gpu.name} · {mib(gpu.vram_total_mb)} VRAM · {mib(sys?.hardware.memory.total_mb)} RAM{/if}</strong>
             {#if match}<p class="muted">{match.notes}</p>{/if}
           </div>
         </div>
@@ -238,7 +257,7 @@
                     <span class="spacer"></span>
                     {#if q.installed}<CircleCheck class="okic" />
                     {:else if q.download && q.download.status !== 'failed' && q.download.status !== 'cancelled'}<span class="faint">{Math.round((q.download.done_bytes / (q.download.total_bytes || 1)) * 100)}%</span>
-                    {:else}<Button size="sm" variant="subtle" onclick={() => installCatalog(c.id, q.id).then(() => loadCatalog())}><Download />Install</Button>{/if}
+                    {:else}<Button size="sm" variant="subtle" onclick={() => installCatalog(c.id, q.id, srv).then(() => loadCatalog(srv))}><Download />Install</Button>{/if}
                   </div>
                 {/each}
               </div>
@@ -248,7 +267,7 @@
                 <span class="spacer"></span>
                 {#if c.installed}<CircleCheck class="okic" />
                 {:else if c.download && c.download.status !== 'failed' && c.download.status !== 'cancelled'}<span class="faint">{Math.round((c.download.done_bytes / (c.download.total_bytes || 1)) * 100)}%</span>
-                {:else}<Button size="sm" variant="subtle" onclick={() => installCatalog(c.id).then(() => loadCatalog())}><Download />Install</Button>{/if}
+                {:else}<Button size="sm" variant="subtle" onclick={() => installCatalog(c.id, undefined, srv).then(() => loadCatalog(srv))}><Download />Install</Button>{/if}
               </div>
             {/if}
             <button class="repo" onclick={() => isTauri ? openUrl(`https://huggingface.co/${c.repo}`) : window.open(`https://huggingface.co/${c.repo}`)}>{c.repo}<ExternalLink /></button>
@@ -308,11 +327,11 @@
       </div>
 
     {:else if tab === 'downloads'}
-      {#if !models.downloads.length}
+      {#if !mine.downloads.length}
         <Empty icon={Download} title="No downloads" body="Downloads resume automatically after interruptions or engine restarts." />
       {/if}
       <div class="list">
-        {#each models.downloads as d (d.id)}
+        {#each mine.downloads as d (d.id)}
           <div class="row card dl">
             <div class="info">
               <div class="name">{d.name}

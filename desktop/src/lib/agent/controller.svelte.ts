@@ -1,6 +1,6 @@
 // Binds the pure loop to the real world for one session: the engine (inference only), the
 // native layer (all execution) and reactive state for the UI.
-import { ApiError, api, streamChat } from '../api/client';
+import { ApiError, apiFor, streamChat } from '../api/client';
 import { models } from '../stores/models.svelte';
 import { newId, titleFromPrompt } from '../stores/sessions';
 import { runLoop, type LoopDeps } from './loop';
@@ -25,19 +25,26 @@ function olderThan(v: string, min: number[]): boolean {
   return false;
 }
 
-let supportChecked: Promise<void> | null = null;
-export function resetSupportCheck() {
-  supportChecked = null;
+// Checked once per engine (server profile id; "" = primary).
+const supportChecked = new Map<string, Promise<void>>();
+export function resetSupportCheck(engine?: string | null) {
+  if (engine === undefined) supportChecked.clear();
+  else supportChecked.delete(engine ?? '');
 }
-async function ensureEngineSupport(): Promise<void> {
-  supportChecked ??= (async () => {
-    const h = await api.get<{ engine_version?: string }>('/v1/health');
-    if (!h.engine_version || olderThan(h.engine_version, MIN_ENGINE)) throw new EngineTooOld(h.engine_version ?? null);
-  })();
+async function ensureEngineSupport(engine: string | null): Promise<void> {
+  const key = engine ?? '';
+  let p = supportChecked.get(key);
+  if (!p) {
+    p = (async () => {
+      const h = await apiFor(engine).get<{ engine_version?: string }>('/v1/health');
+      if (!h.engine_version || olderThan(h.engine_version, MIN_ENGINE)) throw new EngineTooOld(h.engine_version ?? null);
+    })();
+    supportChecked.set(key, p);
+  }
   try {
-    await supportChecked;
+    await p;
   } catch (e) {
-    supportChecked = null;
+    supportChecked.delete(key);
     throw e;
   }
 }
@@ -51,7 +58,8 @@ export class AgentController {
   private waiters = new Map<string, (ok: boolean) => void>();
   private unlisten: (() => void) | null = null;
   readonly sessionId: string;
-  private getModel: () => { ref: string | null; ctx: number | null; name?: string };
+  /** The chat model, and the server it runs on (`engine`, null = primary) or why none can run it (`routeError`). */
+  private getModel: () => { ref: string | null; ctx: number | null; name?: string; engine?: string | null; routeError?: string | null };
   private onTitle: (t: string) => void;
 
   constructor(sessionId: string, getModel: AgentController['getModel'], onTitle: (t: string) => void) {
@@ -91,9 +99,13 @@ export class AgentController {
       this.error = 'Choose a project folder first.';
       return false;
     }
-    const { ref } = this.getModel();
+    const { ref, engine, routeError } = this.getModel();
     if (!ref) {
       this.error = 'Choose a model first.';
+      return false;
+    }
+    if (routeError) {
+      this.error = routeError;
       return false;
     }
     if (!native.available) {
@@ -102,7 +114,7 @@ export class AgentController {
     }
     this.error = null;
     try {
-      await ensureEngineSupport();
+      await ensureEngineSupport(engine ?? null);
     } catch (e) {
       this.error = (e as Error).message;
       return false;
@@ -121,8 +133,13 @@ export class AgentController {
     const r = this.lastRun;
     if (!r || this.running) return;
     this.error = null;
+    const { engine, routeError } = this.getModel();
+    if (routeError) {
+      this.error = routeError;
+      return;
+    }
     try {
-      await ensureEngineSupport();
+      await ensureEngineSupport(engine ?? null);
     } catch (e) {
       this.error = (e as Error).message;
       return;
@@ -161,11 +178,13 @@ export class AgentController {
       /* summary falls back to tool-reported changes */
     }
     this.unlisten = await native.onOutput((c) => c.run_id === run.id && appendLive(run, c.call_id, c.stream, c.text)).catch(() => null) as (() => void) | null;
-    const { ref, ctx } = this.getModel();
+    const { ref, ctx, engine } = this.getModel();
     const modelRef = run.model ?? ref!;
+    // The model runs on one server for the whole run; the tools always run on this computer.
+    const modelEngine = engine ?? null;
 
     const deps: LoopDeps = {
-      model: (messages, sig, onDelta, onTool) => this.callModel(modelRef, messages, sig, onDelta, onTool),
+      model: (messages, sig, onDelta, onTool) => this.callModel(modelRef, messages, sig, onDelta, onTool, modelEngine),
       tool: async (req) => {
         try {
           return await native.call({ workspace: project, run_id: run.id, call_id: req.call_id, tool: req.tool, args: req.args, mode: st.permission, approval_id: req.approval_id ?? null });
@@ -226,7 +245,7 @@ export class AgentController {
     });
   }
 
-  private async callModel(modelRef: string, messages: AgentMessage[], signal: AbortSignal, onDelta: (c: string, r: string) => void, onTool?: (name: string) => void): Promise<ModelTurn> {
+  private async callModel(modelRef: string, messages: AgentMessage[], signal: AbortSignal, onDelta: (c: string, r: string) => void, onTool?: (name: string) => void, engine: string | null = null): Promise<ModelTurn> {
     toolsCache ??= await native.toolDefs();
     let content = '';
     let reasoning = '';
@@ -245,10 +264,11 @@ export class AgentController {
           else if (ev.type === 'error') throw new Error(ev.message);
         },
         signal,
+        engine,
       );
     } catch (e) {
       if (e instanceof ApiError && e.status === 404 && /not found/i.test(e.message)) {
-        resetSupportCheck();
+        resetSupportCheck(engine);
         throw new EngineTooOld(null);
       }
       throw e;

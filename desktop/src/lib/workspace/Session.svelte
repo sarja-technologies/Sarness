@@ -1,15 +1,18 @@
 <script lang="ts">
   import { Clapperboard, Code2, FileCode, ImageIcon, MessagesSquare, PanelRight, Power, Wand2 } from '@lucide/svelte';
   import { tick } from 'svelte';
-  import { api, qs, streamChat } from '../api/client';
+  import { apiFor, streamChat } from '../api/client';
   import { mediaUrl } from '../api/transport';
   import type { Attachment as ChatAttachment, ChatEvent, ChatParams, Conversation, Generation, Job, Message, Workflow } from '../api/types';
   import { deepestLeaf, pathTo, siblings } from '../chat/tree';
   import MessageView from '../chat/MessageView.svelte';
   import CodePanel from '../chat/CodePanel.svelte';
   import { CODE_SYSTEM_PROMPT, extractBlocks } from '../chat/code';
-  import { loadModels, byCategory, modelById, models } from '../stores/models.svelte';
-  import { cancelJob, jobs, retryJob, submitJob } from '../stores/jobs.svelte';
+  import { loadModels, byCategory, chatModelByRef, chatOptions, hostHint, llmOn, modelById, models } from '../stores/models.svelte';
+  import { jobs, retryJob, submitJob } from '../stores/jobs.svelte';
+  import { conn, engineOnline, profileName } from '../stores/connection.svelte';
+  import { fileOn, moveConversation, routeFor } from '../stores/routing.svelte';
+  import ServerChoice from './ServerChoice.svelte';
   import { prefs, persistPrefs } from '../stores/prefs.svelte';
   import { destination } from '../stores/projects.svelte';
   import { getSession, touch } from '../stores/sessions.svelte';
@@ -66,20 +69,38 @@
   let focusFile = $state<string | null>(null);
 
   const mode = $derived(session.mode);
-  const modelRef = $derived(conv?.model_ref ?? session.chatModel ?? prefs.lastChatModel ?? models.chatModels[0]?.ref ?? null);
-  const chatModel = $derived(models.chatModels.find((m) => m.ref === modelRef));
+  const modelRef = $derived(conv?.model_ref ?? session.chatModel ?? prefs.lastChatModel ?? chatOptions()[0]?.ref ?? null);
+  const multi = $derived(Object.keys(conn.engines).length > 1);
+  /** The engine API holding this conversation (primary until the conversation exists). */
+  const capi = $derived(apiFor(session.engine));
+
+  // ----------------------------------------------------------- routing
+  // Chat stays on the server holding the conversation while that server has the model; otherwise the
+  // router picks one (manual choice > compatibility > availability > preference > free memory > load).
+  const textTask = $derived(mode === 'code' ? 'code' : pending.some((a) => a.mime.startsWith('image/')) ? 'vision' : 'chat');
+  const chatRoute = $derived.by(() => {
+    if (!session.route && session.engine && engineOnline(session.engine) && models.by[session.engine]?.chatModels.some((m) => m.ref === modelRef)) {
+      return { ok: true as const, engine: session.engine, reason: 'conversation is stored here', candidates: [session.engine] };
+    }
+    return routeFor(textTask, modelRef, session.route);
+  });
+  const chatEngine = $derived(chatRoute.ok ? chatRoute.engine : session.engine);
+  const chatModel = $derived(chatModelByRef(modelRef, chatEngine));
+  const mediaRoute = $derived(mode === 'image' ? routeFor('image', session.image.model, session.route) : mode === 'video' ? routeFor('video', session.video.model, session.route) : null);
+  const mediaEngine = $derived(mediaRoute?.ok ? mediaRoute.engine : null);
+  const activeRoute = $derived(isTextMode(mode) ? chatRoute : mediaRoute);
   const path = $derived(pathTo(msgs, conv?.active_leaf_id ?? null));
   const blocks = $derived(extractBlocks(path));
-  const llm = $derived(models.llm);
+  const llm = $derived(llmOn(chatEngine) ?? models.llm);
   const localLoaded = $derived(chatModel?.local && llm?.state === 'ready' && `local:${llm.model_id}` === modelRef);
-  const imageModel = $derived(modelById(session.image.model));
-  const videoModel = $derived(modelById(session.video.model));
+  const imageModel = $derived(modelById(session.image.model, mediaEngine));
+  const videoModel = $derived(modelById(session.video.model, mediaEngine));
   const msgById = $derived(new Map(path.map((m) => [m.id, m])));
   // ------------------------------------------------------------ coding agent
   // Code mode is an agent: the model (on the server) only thinks; tools run on THIS computer.
   const agent = new AgentController(
     sessionId,
-    () => ({ ref: modelRef, ctx: chatModel?.default_ctx ?? null, name: chatModel?.name }),
+    () => ({ ref: modelRef, ctx: chatModel?.default_ctx ?? null, name: chatModel?.name, engine: chatRoute.ok ? chatRoute.engine : null, routeError: chatRoute.ok ? null : chatRoute.error }),
     (t) => {
       session.hasAgent = true;
       if (!session.titled) {
@@ -121,9 +142,10 @@
     if (!active) return;
     if (!models.chatModels.length) loadModels().catch(() => {});
   });
+  // Restore the conversation once its server is reachable (it may connect after this pane opens).
   let restored = false;
   $effect(() => {
-    if (active && !restored) {
+    if (active && !restored && (!session.convId || !session.engine || engineOnline(session.engine))) {
       restored = true;
       if (session.convId) openConv(session.convId, true);
     }
@@ -131,7 +153,7 @@
 
   async function openConv(id: string, restoring = false) {
     try {
-      const c = await api.get<Conversation>(`/v1/chat/conversations/${id}`);
+      const c = await capi.get<Conversation>(`/v1/chat/conversations/${id}`);
       msgs = c.messages ?? [];
       conv = c;
       stick = true;
@@ -139,17 +161,44 @@
       scrollBottom(true);
     } catch (e) {
       // A conversation deleted elsewhere must not break the session: keep media, drop the dead link.
-      if (restoring && (e as { status?: number }).status === 404) session.convId = null;
+      if (restoring && (e as { status?: number }).status === 404 && engineOnline(session.engine)) session.convId = null;
       else if (!restoring) toastError(e);
     }
   }
 
+  /** Destination project/folder: projects live on the primary server, so only work there is filed in them. */
+  const destFor = (engine: string | null) => (!engine || engine === conn.activeId ? destination() : {});
+
+  /**
+   * The conversation on the server that will answer. A conversation stored on another server is
+   * copied there first (the original stays where it was), so the chosen model is never swapped.
+   */
   async function ensureConv(): Promise<Conversation> {
+    if (!chatRoute.ok) throw new Error(chatRoute.error);
+    const target = chatRoute.engine;
+    if (conv && session.engine && session.engine !== target) {
+      if (!engineOnline(session.engine)) throw new Error(`This conversation is stored on ${profileName(session.engine)}, which is offline. It can continue on ${profileName(target)} once ${profileName(session.engine)} is back.`);
+      const moved = await moveConversation(conv.id, session.engine, target);
+      session.formerConvs = [...session.formerConvs, { engine: session.engine, convId: conv.id }];
+      toast('info', `Conversation continued on ${profileName(target)}`, `${chatModel?.name ?? 'This model'} runs there. The earlier copy stays on ${profileName(session.engine)}; attachments were not copied.`);
+      session.engine = target;
+      session.serverId = conn.engines[target]?.caps?.server_id || null;
+      session.convId = moved.id;
+      conv = { ...moved, messages: moved.messages ?? [] };
+      msgs = moved.messages ?? [];
+      if (conv.model_ref !== modelRef) {
+        conv.model_ref = modelRef;
+        apiFor(target).patch(`/v1/chat/conversations/${moved.id}`, { model_ref: modelRef }).catch(() => {});
+      }
+      return conv;
+    }
     if (conv) return conv;
-    const c = await api.post<Conversation>('/v1/chat/conversations', { model_ref: modelRef, ...destination() });
+    const c = await apiFor(target).post<Conversation>('/v1/chat/conversations', { model_ref: modelRef, ...destFor(target) });
     conv = { ...c, messages: [] };
     msgs = [];
     session.convId = c.id;
+    session.engine = target;
+    session.serverId = conn.engines[target]?.caps?.server_id || null;
     return conv;
   }
 
@@ -157,7 +206,7 @@
   async function ensureSystem(c: Conversation) {
     const want = (mode === 'code' ? CODE_SYSTEM_PROMPT : session.chatSystem) + mediaContext(session.entries);
     if ((c.system_prompt ?? '') !== want) {
-      await api.patch(`/v1/chat/conversations/${c.id}`, { system_prompt: want });
+      await capi.patch(`/v1/chat/conversations/${c.id}`, { system_prompt: want });
       c.system_prompt = want;
     }
   }
@@ -188,13 +237,13 @@
     tick().then(() => composerEl?.focus());
   }
 
-  const textOptions = $derived(models.chatModels.map((m) => ({
+  const textOptions = $derived(chatOptions().map((m) => ({
     value: m.ref as string | null,
     label: m.name,
-    group: m.local ? 'On your server' : m.provider,
-    hint: [m.vision ? 'vision' : 'text', m.vram_mb ? `~${mib(m.vram_mb)} VRAM` : null, m.size ? bytes(m.size) : null].filter(Boolean).join(' · '),
+    group: m.local ? (multi ? 'On your servers' : 'On your server') : m.provider,
+    hint: [hostHint(m.ref, 'chat'), m.vision ? 'vision' : 'text', m.vram_mb ? `~${mib(m.vram_mb)} ${multi ? 'memory' : 'VRAM'}` : null, m.size ? bytes(m.size) : null].filter(Boolean).join(' · '),
   })));
-  const mediaOptions = (cat: 'image' | 'video') => byCategory(cat).map((m) => ({ value: m.id as string | null, label: m.name, hint: [m.vram_mb ? `~${mib(m.vram_mb)} VRAM` : null, m.family].filter(Boolean).join(' · ') }));
+  const mediaOptions = (cat: 'image' | 'video') => byCategory(cat).map((m) => ({ value: m.id as string | null, label: m.name, hint: [hostHint(m.id, 'media'), m.vram_mb ? `~${mib(m.vram_mb)} ${multi ? 'memory' : 'VRAM'}` : null, m.family].filter(Boolean).join(' · ') }));
   const modelOptions = $derived(isTextMode(mode) ? textOptions : mediaOptions(mode as 'image' | 'video'));
   const modelValue = $derived(mode === 'image' ? session.image.model : mode === 'video' ? session.video.model : modelRef);
 
@@ -207,9 +256,10 @@
     session.chatModel = ref;
     prefs.lastChatModel = ref;
     persistPrefs();
-    if (conv) {
+    // A model on another server moves the conversation on the next message (see ensureConv).
+    if (conv && models.by[session.engine ?? '']?.chatModels.some((m) => m.ref === ref)) {
       conv.model_ref = ref;
-      api.patch(`/v1/chat/conversations/${conv.id}`, { model_ref: ref }).catch(() => {});
+      capi.patch(`/v1/chat/conversations/${conv.id}`, { model_ref: ref }).catch(() => {});
     }
   }
   // First available model per media kind, applying its defaults.
@@ -233,7 +283,13 @@
   // ------------------------------------------------------------------ chat
   async function generate(body: Record<string, unknown>) {
     if (!modelRef) return toast('warning', 'Install or choose a chat model first');
-    const c = await ensureConv();
+    let c: Conversation;
+    try {
+      c = await ensureConv();
+    } catch (e) {
+      return toastError(e, 'Cannot send this message');
+    }
+    const engine = session.engine;
     try {
       await ensureSystem(c);
     } catch (e) {
@@ -243,7 +299,7 @@
     statusText = '';
     stick = true;
     try {
-      await streamChat(`/v1/chat/conversations/${c.id}/generate`, { model_ref: modelRef, ...(mode === 'chat' ? { web_search: prefs.chatWebSearch } : {}), ...body }, (ev: ChatEvent) => onChatEvent(c.id, ev), abort.signal);
+      await streamChat(`/v1/chat/conversations/${c.id}/generate`, { model_ref: modelRef, ...(mode === 'chat' ? { web_search: prefs.chatWebSearch } : {}), ...body }, (ev: ChatEvent) => onChatEvent(c.id, ev), abort.signal, engine);
     } catch (e) {
       toastError(e, 'Chat failed');
       void reconcile(c.id);
@@ -261,7 +317,7 @@
       await new Promise((r) => setTimeout(r, 2000));
       if (conv?.id !== id || streamingId) return;
       try {
-        const c = await api.get<Conversation>(`/v1/chat/conversations/${id}`);
+        const c = await capi.get<Conversation>(`/v1/chat/conversations/${id}`);
         msgs = c.messages ?? [];
         conv = c;
         return;
@@ -311,7 +367,14 @@
       return toast('warning', 'This model cannot read images', 'Choose a vision model, or remove the image.');
     }
     const parent = path.length ? path[path.length - 1].id : null;
-    const atts = pending.map((a) => a.id);
+    // Attachments were uploaded to the server routed at the time; copy any that are elsewhere.
+    let atts: string[];
+    try {
+      const to = chatRoute.ok ? chatRoute.engine : null;
+      atts = await Promise.all(pending.map((a) => fileOn(a.id, session.files[a.id], to)));
+    } catch (e) {
+      return toastError(e, 'Could not send the attachments');
+    }
     if (!session.titled) {
       session.title = titleFromPrompt(text);
       session.titled = true;
@@ -323,7 +386,7 @@
 
   async function stop() {
     if (mode === 'code') return agent.stop();
-    if (conv) api.post(`/v1/chat/conversations/${conv.id}/stop`).catch(() => {});
+    if (conv) capi.post(`/v1/chat/conversations/${conv.id}/stop`).catch(() => {});
     abort?.abort();
   }
   async function regenerate(m: Message) {
@@ -338,20 +401,20 @@
     if (!conv) return;
     const leaf = deepestLeaf(msgs, id);
     conv.active_leaf_id = leaf;
-    api.patch(`/v1/chat/conversations/${conv.id}`, { active_leaf_id: leaf }).catch(() => {});
+    capi.patch(`/v1/chat/conversations/${conv.id}`, { active_leaf_id: leaf }).catch(() => {});
   }
 
   async function loadModel() {
     if (!chatModel?.local) return;
     try {
-      await api.post('/v1/llm/load', { model_id: chatModel.ref.slice(6), ctx: conv?.params?.ctx, gpu_layers: conv?.params?.gpu_layers });
+      await apiFor(chatEngine).post('/v1/llm/load', { model_id: chatModel.ref.slice(6), ctx: conv?.params?.ctx, gpu_layers: conv?.params?.gpu_layers });
     } catch (e) {
       toastError(e, 'Could not load model');
     }
   }
   async function unloadModel() {
     try {
-      await api.post('/v1/llm/unload');
+      await apiFor(chatEngine).post('/v1/llm/unload');
     } catch (e) {
       toastError(e);
     }
@@ -361,10 +424,17 @@
   async function attach(files: FileList | File[] | null | undefined) {
     if (!files || !Array.from(files).length) return;
     const list = Array.from(files);
+    // Inputs go to the server that will run the work (copied later if routing changes).
+    const home = (isMediaMode(mode) ? mediaEngine : chatRoute.ok ? chatRoute.engine : session.engine) ?? conn.activeId;
+    const up = async (f: File) => {
+      const r = await apiFor(home).upload(f, f.name);
+      if (home) session.files[r.id] = home;
+      return r;
+    };
     uploading = true;
     try {
       if (mode === 'image') {
-        const r = await api.upload(list[0], list[0].name);
+        const r = await up(list[0]);
         session.image.reference_image = r.id;
         session.image.mask_image = null;
         refNames[r.id] = list[0].name;
@@ -373,7 +443,7 @@
           toast('warning', 'This video model cannot start from an image', 'Choose a model with image-to-video support.');
           return;
         }
-        const r = await api.upload(list[0], list[0].name);
+        const r = await up(list[0]);
         session.video.start_image = r.id;
         session.video.vmode = 'i2v';
         refNames[r.id] = list[0].name;
@@ -387,7 +457,7 @@
         }
       } else {
         for (const f of list) {
-          const r = await api.upload(f, f.name);
+          const r = await up(f);
           pending = [...pending, { id: r.id, name: f.name, mime: r.mime, size: r.size, url: r.url }];
         }
       }
@@ -399,11 +469,11 @@
   }
   const attachments = $derived<Attachment[]>(
     mode === 'image' && session.image.reference_image
-      ? [{ id: session.image.reference_image, name: refNames[session.image.reference_image] ?? 'Reference image', url: mediaUrl(`/v1/files/${session.image.reference_image}`), image: true }]
+      ? [{ id: session.image.reference_image, name: refNames[session.image.reference_image] ?? 'Reference image', url: mediaUrl(`/v1/files/${session.image.reference_image}`, session.files[session.image.reference_image]), image: true }]
       : mode === 'video' && session.video.start_image
-        ? [{ id: session.video.start_image, name: refNames[session.video.start_image] ?? 'Start frame', url: mediaUrl(`/v1/files/${session.video.start_image}`), image: true }]
+        ? [{ id: session.video.start_image, name: refNames[session.video.start_image] ?? 'Start frame', url: mediaUrl(`/v1/files/${session.video.start_image}`, session.files[session.video.start_image]), image: true }]
         : mode === 'code' ? codeFiles.map((f) => ({ id: f.id, name: f.name, url: '', image: false }))
-        : isTextMode(mode) ? pending.map((a) => ({ id: a.id, name: a.name ?? 'file', url: mediaUrl(a.url), image: a.mime.startsWith('image/') })) : [],
+        : isTextMode(mode) ? pending.map((a) => ({ id: a.id, name: a.name ?? 'file', url: mediaUrl(a.url, session.files[a.id]), image: a.mime.startsWith('image/') })) : [],
   );
   function removeAttachment(id: string) {
     if (mode === 'image') {
@@ -429,18 +499,35 @@
 
   // --------------------------------------------------------------- generation
   function addEntry(m: 'image' | 'video', job: Job, prompt: string, summary: string[]) {
-    const e: GenEntry = { id: newId('g'), mode: m, jobId: job.id, prompt, created: Date.now() / 1000, summary };
+    const engine = job.engine ?? conn.activeId;
+    const e: GenEntry = { id: newId('g'), mode: m, jobId: job.id, engine, serverId: (engine && conn.engines[engine]?.caps?.server_id) || null, prompt, created: Date.now() / 1000, summary };
     session.entries.push(e);
     touch(session);
     stick = true;
     tick().then(() => scrollBottom(true));
   }
 
-  async function runMedia(m: 'image' | 'video', prompt: string, simple: Record<string, unknown>, summary: string[]) {
+  const FILE_INPUTS = ['reference_image', 'mask_image', 'start_image', 'end_image'] as const;
+
+  /**
+   * Routes a media job and submits it to that server. `homes` names where input files live when they
+   * are not in this session's upload map (e.g. a generated image being varied).
+   */
+  async function runMedia(m: 'image' | 'video', prompt: string, simple: Record<string, unknown>, summary: string[], homes: Record<string, string | null | undefined> = {}) {
+    const r = routeFor(m, simple.model as string | undefined, session.route);
+    if (!r.ok) {
+      toast('warning', m === 'video' ? 'Cannot start this video' : 'Cannot start this image', r.error);
+      return false;
+    }
     submitting = true;
     try {
-      const job = await submitJob({ kind: m, simple, ...destination() });
-      addEntry(m, job, prompt, summary);
+      const body = { ...simple };
+      for (const k of FILE_INPUTS) {
+        const id = body[k];
+        if (typeof id === 'string' && id) body[k] = await fileOn(id, homes[id] ?? session.files[id] ?? conn.activeId, r.engine);
+      }
+      const job = await submitJob({ kind: m, simple: body, ...destFor(r.engine) }, r.engine);
+      addEntry(m, job, prompt, multi ? [...summary, `on ${profileName(r.engine)}`] : summary);
       return true;
     } catch (e) {
       toastError(e, m === 'video' ? 'Could not start video generation' : 'Could not start generation');
@@ -489,7 +576,7 @@
     const prompt = g.prompt ?? '';
     // New-seed reruns pick the seed here so it stays int32-safe for the gateway.
     if (!exact && simple) void runMedia(g.type, prompt, { ...simple, seed: randomSeed() }, [`regenerate`]);
-    else submitting = true, api.post<Job>(`/v1/generations/${g.id}/rerun`, { new_seed: !exact }).then((j) => { jobs.byId[j.id] = j; addEntry(g.type, j, prompt, [exact ? 'same seed' : 'regenerate']); }).catch((e) => toastError(e, 'Could not start generation')).finally(() => (submitting = false));
+    else submitting = true, apiFor(g.engine).post<Job>(`/v1/generations/${g.id}/rerun`, { new_seed: !exact }).then((j) => { const job = { ...j, engine: g.engine ?? conn.activeId ?? undefined }; jobs.byId[j.id] = job; addEntry(g.type, job, prompt, [exact ? 'same seed' : 'regenerate']); }).catch((e) => toastError(e, 'Could not start generation')).finally(() => (submitting = false));
   }
 
   function vary(g: Generation, strength: number) {
@@ -508,7 +595,7 @@
       height: g.height,
       upscale: null,
     };
-    void runMedia('image', g.prompt ?? '', simple, [`vary ${strength <= 0.4 ? 'subtle' : 'strong'}`]);
+    void runMedia('image', g.prompt ?? '', simple, [`vary ${strength <= 0.4 ? 'subtle' : 'strong'}`], { [g.file_id]: g.engine });
   }
 
   async function editGen(g: Generation) {
@@ -525,6 +612,7 @@
       p.vae = s.vae ?? null;
       p.reference_image = s.reference_image ?? null;
       p.mask_image = s.mask_image ?? null;
+      for (const f of [p.reference_image, p.mask_image]) if (f && g.engine) session.files[f] = g.engine;
       if (s.denoise) p.denoise = s.denoise;
       if (typeof s.seed === 'number') { p.seed = s.seed; p.random_seed = false; }
       const match = ASPECTS.find((a) => Math.abs(a.w / a.h - (s.width ?? 1) / (s.height ?? 1)) < 0.03);
@@ -541,9 +629,10 @@
       p.resolution = `${s.width}x${s.height}`;
       p.start_image = s.start_image ?? null;
       p.end_image = s.end_image ?? null;
+      for (const f of [p.start_image, p.end_image]) if (f && g.engine) session.files[f] = g.engine;
       p.vmode = s.start_image ? 'i2v' : 't2v';
     } else {
-      const full = await api.get<Generation>(`/v1/generations/${g.id}`);
+      const full = await apiFor(g.engine).get<Generation>(`/v1/generations/${g.id}`);
       if (full.workflow) {
         session.graphs[g.type] = full.workflow;
         editor = g.type;
@@ -559,7 +648,9 @@
   async function retryEntry(job: Job) {
     const simple = job.simple as Record<string, unknown> | null;
     const prompt = String((simple as any)?.prompt ?? job.title ?? '');
-    if (simple) void runMedia(job.kind, prompt, { ...simple, seed: randomSeed() }, ['retry']);
+    // Inputs of a job live on the server that ran it.
+    const homes = Object.fromEntries(FILE_INPUTS.map((k) => (simple as any)?.[k]).filter(Boolean).map((id) => [id, job.engine]));
+    if (simple) void runMedia(job.kind, prompt, { ...simple, seed: randomSeed() }, ['retry'], homes);
     else {
       try {
         const j = await retryJob(job.id, false);
@@ -572,7 +663,8 @@
 
   // Honest time estimate for video, from this server's own completed runs of the same model.
   const videoEstimate = $derived.by(() => {
-    const runs = Object.values(jobs.byId).filter((j) => j.kind === 'video' && j.status === 'completed' && j.result?.elapsed_s && (j.simple as any)?.model === session.video.model && (j.simple as any)?.steps);
+    const runs = Object.values(jobs.byId).filter((j) => j.kind === 'video' && j.status === 'completed' && j.result?.elapsed_s && (j.simple as any)?.model === session.video.model && (j.simple as any)?.steps
+      && (!mediaEngine || (j.engine ?? conn.activeId) === mediaEngine));
     if (!runs.length) return null;
     const per = runs.slice(0, 5).map((j) => {
       const s = j.simple as any;
@@ -580,7 +672,7 @@
     });
     const k = per.reduce((a, b) => a + b, 0) / per.length;
     const [w, h] = (session.video.resolution || '832x480').split('x').map(Number);
-    return `≈ ${duration(k * session.video.steps * w * h * session.video.frames)} on this server`;
+    return `≈ ${duration(k * session.video.steps * w * h * session.video.frames)} on ${multi && mediaEngine ? profileName(mediaEngine) : 'this server'}`;
   });
 
   // ---------------------------------------------------------- node editor
@@ -589,7 +681,7 @@
       if (!session.graphs[kind]) {
         const text = session.draft;
         const simple = kind === 'image' ? imageSimpleParams(session.image, text, imageModel) : videoSimpleParams(session.video, text, videoModel);
-        session.graphs[kind] = await switchToAdvanced(kind, null, simple);
+        session.graphs[kind] = await switchToAdvanced(kind, null, simple, mediaEngine);
       }
       editor = kind;
     } catch (e) {
@@ -597,7 +689,10 @@
     }
   }
   async function runWorkflow(kind: 'image' | 'video', g: Workflow) {
-    const job = await submitJob({ kind, workflow: g, ...destination() });
+    // A graph names models directly; it runs on the server routed for this mode's model.
+    const r = routeFor(kind, kind === 'image' ? session.image.model : session.video.model, session.route);
+    if (!r.ok) throw new Error(r.error);
+    const job = await submitJob({ kind, workflow: g, ...destFor(r.engine) }, r.engine);
     addEntry(kind, job, session.draft.trim() || 'Node workflow', ['workflow']);
     return job;
   }
@@ -617,7 +712,7 @@
       session.chatSystem = draftSystem;
       const patch: Record<string, unknown> = { params: draftParams };
       if (mode === 'chat') patch.system_prompt = draftSystem;
-      await api.patch(`/v1/chat/conversations/${c.id}`, patch);
+      await capi.patch(`/v1/chat/conversations/${c.id}`, patch);
       c.params = { ...draftParams };
       if (mode === 'chat') c.system_prompt = draftSystem;
       toast('success', 'Chat settings applied');
@@ -629,7 +724,11 @@
     }
   }
 
-  const chips = $derived(mode === 'code' ? ['tools run on this computer'] : summaryFor(mode, session, mode === 'image' ? imageModel : videoModel, { temperature: conv?.params?.temperature }));
+  const where = $derived(multi && activeRoute?.ok ? `on ${profileName(activeRoute.engine)}${session.route ? '' : ' · auto'}` : null);
+  const chips = $derived([
+    ...(mode === 'code' ? ['tools run on this computer'] : summaryFor(mode, session, mode === 'image' ? imageModel : videoModel, { temperature: conv?.params?.temperature })),
+    ...(where ? [where] : []),
+  ]);
   const noModels = $derived(
     models.loaded && (isTextMode(mode) ? !models.chatModels.length : !byCategory(mode as 'image' | 'video').length),
   );
@@ -669,7 +768,7 @@
             <h1>What shall we make?</h1>
             <p class="muted">{hero[mode]}</p>
             {#if noModels}
-              <p class="warn">No {isTextMode(mode) ? 'chat' : mode} models are installed on this server yet.
+              <p class="warn">No {isTextMode(mode) ? 'chat' : mode} models are installed on {multi ? 'your servers' : 'this server'} yet.
                 <button class="link" onclick={() => { prefs.view = 'models'; persistPrefs(); }}>Browse models</button></p>
             {/if}
           </div>
@@ -679,7 +778,7 @@
           {#if item.kind === 'message'}
             {@const m = msgById.get(item.id)}
             {#if m}
-              <MessageView {m} sibs={siblings(msgs, m)} streaming={m.id === streamingId} modelName={models.chatModels.find((x) => x.ref === m.model_ref)?.name}
+              <MessageView {m} sibs={siblings(msgs, m)} streaming={m.id === streamingId} modelName={chatModelByRef(m.model_ref, session.engine)?.name} engine={session.engine}
                 onswitch={switchBranch} onregenerate={() => regenerate(m)} onedit={(t) => editMessage(m, t)} />
             {/if}
           {:else if item.kind === 'run'}
@@ -729,17 +828,20 @@
         {/snippet}
         {#snippet settings()}
           {#if mode === 'image'}
-            <ImageSettings s={session.image} model={imageModel} {setQuality} />
+            <ServerChoice bind:route={session.route} result={mediaRoute} />
+            <ImageSettings s={session.image} model={imageModel} engine={mediaEngine} files={session.files} {setQuality} />
             <div class="adv"><Button size="sm" variant="ghost" onclick={() => openEditor('image')}><Wand2 />Open node editor</Button><span class="faint small">Advanced: build the pipeline as a graph.</span></div>
           {:else if mode === 'video'}
-            <VideoSettings s={session.video} model={videoModel} estimate={videoEstimate} />
+            <ServerChoice bind:route={session.route} result={mediaRoute} />
+            <VideoSettings s={session.video} model={videoModel} estimate={videoEstimate} engine={mediaEngine} files={session.files} />
             <div class="adv"><Button size="sm" variant="ghost" onclick={() => openEditor('video')}><Wand2 />Open node editor</Button><span class="faint small">Advanced: build the pipeline as a graph.</span></div>
           {:else}
             <div class="chatset">
+              <ServerChoice bind:route={session.route} result={chatRoute} />
               {#if chatModel?.local}
                 <div class="mrow">
                   {#if llm?.state === 'loading' && `local:${llm.model_id}` === modelRef}<span class="mstate"><Spinner size={12} />Loading model…</span>
-                  {:else if localLoaded}<span class="mstate ok"><span class="dot"></span>Loaded on GPU · ctx {llm?.ctx}</span><Button size="sm" variant="ghost" onclick={unloadModel}><Power />Unload</Button>
+                  {:else if localLoaded}<span class="mstate ok"><span class="dot"></span>Loaded{multi && chatEngine ? ` on ${profileName(chatEngine)}` : " on GPU"} · ctx {llm?.ctx}</span><Button size="sm" variant="ghost" onclick={unloadModel}><Power />Unload</Button>
                   {:else}<span class="mstate">Not loaded (loads on first message)</span><Button size="sm" variant="ghost" onclick={loadModel}><Power />Load now</Button>{/if}
                 </div>
               {/if}
@@ -785,9 +887,9 @@
 </div>
 
 {#if editor}
-  <WorkflowOverlay kind={editor} bind:graph={session.graphs[editor]} onclose={() => (editor = null)}
+  <WorkflowOverlay kind={editor} bind:graph={session.graphs[editor]} engine={mediaEngine} onclose={() => (editor = null)}
     onrun={(g) => runWorkflow(editor!, g)}
-    onrebuild={async () => { const k = editor!; const t = session.draft; session.graphs[k] = await switchToAdvanced(k, null, k === 'image' ? imageSimpleParams(session.image, t, imageModel) : videoSimpleParams(session.video, t, videoModel)); }} />
+    onrebuild={async () => { const k = editor!; const t = session.draft; session.graphs[k] = await switchToAdvanced(k, null, k === 'image' ? imageSimpleParams(session.image, t, imageModel) : videoSimpleParams(session.video, t, videoModel), mediaEngine); }} />
 {/if}
 
 <style>

@@ -1,4 +1,4 @@
-import { transport } from './transport';
+import { engineBase, transport } from './transport';
 import type { ChatEvent } from './types';
 
 export class ApiError extends Error {
@@ -21,7 +21,7 @@ function errorMessage(body: any, status: number): string {
   return `Request failed (${status})`;
 }
 
-export async function request<T = any>(method: string, path: string, body?: unknown, init: RequestInit = {}): Promise<T> {
+export async function request<T = any>(method: string, path: string, body?: unknown, init: RequestInit = {}, engine?: string | null): Promise<T> {
   const t = transport();
   if (!t.base) throw new ApiError(0, 'Not connected to a server');
   const headers: Record<string, string> = { ...t.headers };
@@ -33,7 +33,7 @@ export async function request<T = any>(method: string, path: string, body?: unkn
   }
   let res: Response;
   try {
-    res = await fetch(t.base + path, { method, headers, body: payload, ...init });
+    res = await fetch(engineBase(engine) + path, { method, headers, body: payload, ...init });
   } catch (e) {
     if ((e as Error).name === 'AbortError') throw e;
     throw new ApiError(0, 'Cannot reach the Sarness Engine');
@@ -51,25 +51,34 @@ export async function request<T = any>(method: string, path: string, body?: unkn
   return data as T;
 }
 
-export const api = {
-  get: <T = any>(p: string, init?: RequestInit) => request<T>('GET', p, undefined, init),
-  post: <T = any>(p: string, b?: unknown) => request<T>('POST', p, b ?? {}),
-  put: <T = any>(p: string, b?: unknown) => request<T>('PUT', p, b),
-  patch: <T = any>(p: string, b?: unknown) => request<T>('PATCH', p, b),
-  del: <T = any>(p: string) => request<T>('DELETE', p),
-  text: async (p: string): Promise<string> => {
-    const t = transport();
-    const res = await fetch(t.base + p, { headers: t.headers });
-    if (!res.ok) throw new ApiError(res.status, `Request failed (${res.status})`);
-    return res.text();
-  },
-  upload: async (file: File | Blob, name?: string) => {
-    const fd = new FormData();
-    fd.append('file', file, name ?? (file as File).name ?? 'upload');
-    return request<{ id: string; url: string; mime: string; width?: number; height?: number; original_name?: string; size: number }>(
-      'POST', '/v1/uploads', fd);
-  },
-};
+export type Upload = { id: string; url: string; mime: string; width?: number; height?: number; original_name?: string; size: number };
+
+/** The JSON API of one engine (a server profile id), or of the primary engine when `engine` is null. */
+export function apiFor(engine: string | null | undefined) {
+  return {
+    engine: engine ?? null,
+    get: <T = any>(p: string, init?: RequestInit) => request<T>('GET', p, undefined, init, engine),
+    post: <T = any>(p: string, b?: unknown) => request<T>('POST', p, b ?? {}, {}, engine),
+    put: <T = any>(p: string, b?: unknown) => request<T>('PUT', p, b, {}, engine),
+    patch: <T = any>(p: string, b?: unknown) => request<T>('PATCH', p, b, {}, engine),
+    del: <T = any>(p: string) => request<T>('DELETE', p, undefined, {}, engine),
+    text: async (p: string): Promise<string> => {
+      const t = transport();
+      const res = await fetch(engineBase(engine) + p, { headers: t.headers });
+      if (!res.ok) throw new ApiError(res.status, `Request failed (${res.status})`);
+      return res.text();
+    },
+    upload: async (file: File | Blob, name?: string) => {
+      const fd = new FormData();
+      fd.append('file', file, name ?? (file as File).name ?? 'upload');
+      return request<Upload>('POST', '/v1/uploads', fd, {}, engine);
+    },
+  };
+}
+export type EngineApi = ReturnType<typeof apiFor>;
+
+/** The primary engine. */
+export const api = apiFor(null);
 
 export function qs(params: Record<string, unknown>): string {
   const p = new URLSearchParams();
@@ -82,11 +91,11 @@ export function qs(params: Record<string, unknown>): string {
 }
 
 /** POSTs and parses a Server-Sent Events stream of chat events. */
-export async function streamChat(path: string, body: unknown, onEvent: (e: ChatEvent) => void, signal?: AbortSignal): Promise<void> {
+export async function streamChat(path: string, body: unknown, onEvent: (e: ChatEvent) => void, signal?: AbortSignal, engine?: string | null): Promise<void> {
   const t = transport();
   let res: Response;
   try {
-    res = await fetch(t.base + path, {
+    res = await fetch(engineBase(engine) + path, {
       method: 'POST',
       headers: { ...t.headers, 'Content-Type': 'application/json', Accept: 'text/event-stream' },
       body: JSON.stringify(body),

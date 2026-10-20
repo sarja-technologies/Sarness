@@ -7,7 +7,8 @@
 import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
-import { api, ApiError } from '../../api/client';
+import { ApiError } from '../../api/client';
+import { exps, fromExperimentsEngine, xapi } from '../store.svelte';
 import { isTauri, mediaUrl } from '../../api/transport';
 import { onEvent } from '../../stores/connection.svelte';
 import { persistPrefs, prefs } from '../../stores/prefs.svelte';
@@ -80,12 +81,12 @@ async function loadImage(src: string): Promise<HTMLImageElement> {
 /** Saves an engine file through the native dialog (desktop) or opens it (browser). */
 export async function saveEngineFile(fileId: string, url: string, defaultName: string, filter: { name: string; ext: string }) {
   if (!isTauri) {
-    window.open(mediaUrl(url), '_blank');
+    window.open(mediaUrl(url, exps.engine), '_blank');
     return;
   }
   const dest = await save({ defaultPath: defaultName, filters: [{ name: filter.name, extensions: [filter.ext] }] });
   if (!dest) return;
-  await invoke('export_file', { fileId, dest });
+  await invoke('export_file', { fileId, dest, engine: exps.engine });
   toast('success', 'Exported', dest, { action: { label: 'Show', run: () => revealItemInDir(dest) } });
 }
 
@@ -137,12 +138,15 @@ export class PaintSession {
   constructor() {
     this.unsubs.push(
       onEvent('experiment.progress', (e) => {
+        if (!fromExperimentsEngine(e)) return;
         if (e.data?.session === this.session && this.refining) this.progress = { step: e.data.step, total: e.data.total };
       }),
       onEvent('experiment.status', (e) => {
+        if (!fromExperimentsEngine(e)) return;
         if (e.data?.experiment === 'gods-paintbrush' && this.status) this.status.runtime = e.data.runtime;
       }),
       onEvent('experiment.install', (e) => {
+        if (!fromExperimentsEngine(e)) return;
         if (e.data?.experiment !== 'gods-paintbrush' || !this.status) return;
         const { experiment: _, ...state } = e.data;
         this.status.install = state;
@@ -160,7 +164,7 @@ export class PaintSession {
   // ------------------------------------------------------------- status
   async loadStatus(): Promise<void> {
     try {
-      this.status = await api.get<PaintbrushStatus>(`${PB}/status`);
+      this.status = await xapi().get<PaintbrushStatus>(`${PB}/status`);
       this.statusError = null;
     } catch (e) {
       this.statusError = e instanceof ApiError && e.status === 404
@@ -341,7 +345,7 @@ export class PaintSession {
     const version = this.version;
     try {
       const mask = await encodeMask(c.comp.slice(), c.w, c.h);
-      const r = await api.post<RenderResult>(`${PB}/render`, { session: this.session, kind: 'live', mask });
+      const r = await xapi().post<RenderResult>(`${PB}/render`, { session: this.session, kind: 'live', mask });
       if (c === this.canvas && version >= (this.live?.version ?? -1)) {
         this.live = this.shown(r, version);
         if (!this.refined || this.refined.version !== this.version) this.show = 'live';
@@ -404,7 +408,7 @@ export class PaintSession {
     const s = this.settings;
     try {
       const mask = await encodeMask(c.comp.slice(), c.w, c.h);
-      const r = await api.post<RenderResult>(`${PB}/render`, {
+      const r = await xapi().post<RenderResult>(`${PB}/render`, {
         session: this.session, kind: 'refine', mask, seed: safeSeed(s.seed) < 0 ? randomSeed() : safeSeed(s.seed),
         quality: s.quality, creativity: s.creativity, control: s.control, scale: s.scale, prompt: s.guidance,
       });
@@ -425,7 +429,7 @@ export class PaintSession {
 
   async cancel(): Promise<void> {
     try {
-      await api.post(`${PB}/cancel`, { session: this.session });
+      await xapi().post(`${PB}/cancel`, { session: this.session });
     } catch {
       /* nothing running */
     }
@@ -441,7 +445,7 @@ export class PaintSession {
     const r = this.current();
     if (!r) return;
     try {
-      await api.post(`${PB}/renders/${r.renderId}/save`, {
+      await xapi().post(`${PB}/renders/${r.renderId}/save`, {
         project_id: prefs.projectId, folder_id: prefs.folderId, document_id: this.doc.id,
       });
       toast('success', 'Saved to Library', r.kind === 'refine' ? 'Refined photo with its painting and settings.' : 'Live frame with its painting.', {
@@ -456,7 +460,7 @@ export class PaintSession {
     const r = this.current();
     if (!r) return;
     try {
-      const f = await api.post<{ file_id: string; url: string; mime: string; name: string }>(`${PB}/renders/${r.renderId}/export`);
+      const f = await xapi().post<{ file_id: string; url: string; mime: string; name: string }>(`${PB}/renders/${r.renderId}/export`);
       const ext = f.name.split('.').pop() || 'png';
       await saveEngineFile(f.file_id, f.url, `${this.fileStem()}.${ext}`, { name: 'Image', ext });
     } catch (e) {
@@ -469,7 +473,7 @@ export class PaintSession {
     if (!c) return;
     try {
       const mask = await encodeMask(c.comp.slice(), c.w, c.h);
-      const f = await api.post<MaskExport>(`${PB}/mask/export`, { mask, format });
+      const f = await xapi().post<MaskExport>(`${PB}/mask/export`, { mask, format });
       const suffix = { color: 'colours', coco: 'coco-stuff', ade: 'ade20k', index: 'materials' }[format];
       await saveEngineFile(f.file_id, f.url, `${this.fileStem()}-mask-${suffix}.png`, { name: 'PNG image', ext: 'png' });
     } catch (e) {
@@ -521,8 +525,8 @@ export class PaintSession {
       const body = { title: opts.title ?? (opts.asCopy ? `${this.doc.title} (copy)` : this.doc.title),
                      data: await this.data(), thumbnail: await this.thumbnail(), project_id: prefs.projectId };
       const d = this.doc.id && !opts.asCopy
-        ? await api.put<ExperimentDocument>(`${PB}/documents/${this.doc.id}`, body)
-        : await api.post<ExperimentDocument>(`${PB}/documents`, body);
+        ? await xapi().put<ExperimentDocument>(`${PB}/documents/${this.doc.id}`, body)
+        : await xapi().post<ExperimentDocument>(`${PB}/documents`, body);
       this.doc = { id: d.id, title: d.title, dirty: false, savedAt: Date.now() };
       this.writeDraft();
       toast('success', opts.asCopy ? 'Saved a copy' : 'Painting saved', d.title);
@@ -537,7 +541,7 @@ export class PaintSession {
 
   async open(id: string): Promise<boolean> {
     try {
-      const d = await api.get<ExperimentDocument<PaintDocData>>(`${PB}/documents/${id}`);
+      const d = await xapi().get<ExperimentDocument<PaintDocData>>(`${PB}/documents/${id}`);
       const loaded = await deserialize(d.data, this.materials);
       this.settings = { ...DEFAULT_SETTINGS, ...this.settings, ...loaded.settings };
       this.attach(loaded.canvas);

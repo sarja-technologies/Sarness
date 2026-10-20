@@ -15,7 +15,7 @@
   import { randomSeed } from '../util/seed';
 
   /** Video-mode settings. Only options the selected model supports are shown. */
-  let { s, model, estimate = null }: { s: VideoSettings; model: InstalledModel | undefined; estimate?: string | null } = $props();
+  let { s, model, estimate = null, engine = null, files }: { s: VideoSettings; model: InstalledModel | undefined; estimate?: string | null; engine?: string | null; files?: Record<string, string> } = $props();
 
   const caps = $derived(model?.capabilities ?? {});
   const limits = $derived(model?.limits ?? {});
@@ -42,8 +42,8 @@
 
   {#if s.vmode === 'i2v'}
     <div class="frames" class:two={caps.end_frame}>
-      <Field label="Start frame"><ImageInput bind:fileId={s.start_image} label="Start frame" /></Field>
-      {#if caps.end_frame}<Field label="End frame"><ImageInput bind:fileId={s.end_image} label="End frame" /></Field>{/if}
+      <Field label="Start frame"><ImageInput bind:fileId={s.start_image} label="Start frame" {engine} {files} /></Field>
+      {#if caps.end_frame}<Field label="End frame"><ImageInput bind:fileId={s.end_image} label="End frame" {engine} {files} /></Field>{/if}
     </div>
   {/if}
 

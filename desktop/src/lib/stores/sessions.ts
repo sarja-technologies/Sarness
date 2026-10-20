@@ -9,6 +9,10 @@ export interface GenEntry {
   id: string;
   mode: 'image' | 'video';
   jobId: string;
+  /** Server profile id that ran the job and stores its outputs (null only in data from before multi-server). */
+  engine?: string | null;
+  /** That server's stable identity (`srv_…`), to find it again if the profile is re-created. */
+  serverId?: string | null;
   prompt: string;
   created: number; // unix seconds, same clock as chat messages
   summary: string[];
@@ -19,6 +23,15 @@ export interface Session {
   title: string;
   titled: boolean; // true once the title was derived from content (or renamed)
   convId: string | null;
+  /** Server profile id that stores the chat conversation `convId`. */
+  engine: string | null;
+  serverId?: string | null;
+  /** Server chosen manually for new work in this conversation; null = automatic routing. */
+  route: string | null;
+  /** Earlier copies of the conversation left on other servers after it moved (kept, never deleted). */
+  formerConvs: { engine: string; convId: string }[];
+  /** Server that holds each uploaded input file (reference images, start frames), by file id. */
+  files: Record<string, string>;
   mode: Mode;
   entries: GenEntry[];
   hasAgent: boolean; // a project was chosen or a coding task ran (state lives in the agent store)
@@ -38,7 +51,7 @@ export const newId = (p: string) => `${p}${Date.now().toString(36)}${(seq++).toS
 
 export function createSessionObject(now = Date.now() / 1000): Session {
   return {
-    id: newId('s'), title: DEFAULT_TITLE, titled: false, convId: null, mode: 'chat', entries: [], hasAgent: false, draft: '',
+    id: newId('s'), title: DEFAULT_TITLE, titled: false, convId: null, engine: null, route: null, formerConvs: [], files: {}, mode: 'chat', entries: [], hasAgent: false, draft: '',
     image: imageDefaults(), video: videoDefaults(), chatModel: null, chatSystem: '', graphs: { image: null, video: null }, created: now, updated: now,
   };
 }
@@ -58,9 +71,41 @@ export function hydrate(raw: unknown): Session[] {
       image: { ...base.image, ...(s.image ?? {}) },
       video: { ...base.video, ...(s.video ?? {}) },
       graphs: { ...base.graphs, ...(s.graphs ?? {}) },
+      engine: typeof s.engine === 'string' ? s.engine : null,
+      route: typeof s.route === 'string' ? s.route : null,
+      formerConvs: Array.isArray(s.formerConvs) ? s.formerConvs.filter((c) => c && typeof c.engine === 'string' && typeof c.convId === 'string') : [],
+      files: s.files && typeof s.files === 'object' && !Array.isArray(s.files) ? s.files : {},
     });
   }
   return out;
+}
+
+/**
+ * Data saved before multi-server support has no server on its conversations and generations; it all
+ * belongs to the server that was connected then. Returns whether anything changed.
+ */
+export function adoptLegacy(sessions: Session[], engine: string): boolean {
+  let changed = false;
+  for (const s of sessions) {
+    if (s.convId && !s.engine) {
+      s.engine = engine;
+      changed = true;
+    }
+    for (const e of s.entries) {
+      if (!e.engine) {
+        e.engine = engine;
+        changed = true;
+      }
+    }
+    const inputs = [s.image.reference_image, s.image.mask_image, s.video.start_image, s.video.end_image];
+    for (const f of inputs) {
+      if (f && !s.files[f]) {
+        s.files[f] = engine;
+        changed = true;
+      }
+    }
+  }
+  return changed;
 }
 
 export const isEmpty = (s: Session) => !s.convId && !s.entries.length && !s.hasAgent && !s.draft.trim();
@@ -70,14 +115,18 @@ export function titleFromPrompt(text: string): string {
   return t.length > 48 ? `${t.slice(0, 47).trimEnd()}…` : t || DEFAULT_TITLE;
 }
 
-/** Engine conversations that no session points at become history entries (older chats are kept). */
-export function missingFromServer(sessions: Session[], convs: Conversation[]): Session[] {
-  const known = new Set(sessions.map((s) => s.convId).filter(Boolean));
+/** Conversations on `engine` that no session points at become history entries (older chats are kept). */
+export function missingFromServer(sessions: Session[], convs: Conversation[], engine: string | null = null): Session[] {
+  const known = new Set<string>();
+  for (const s of sessions) {
+    if (s.convId && (!engine || !s.engine || s.engine === engine)) known.add(s.convId);
+    for (const f of s.formerConvs ?? []) if (!engine || f.engine === engine) known.add(f.convId);
+  }
   return convs
     .filter((c) => !known.has(c.id))
     .map((c) => ({
       ...createSessionObject(c.created_at ?? c.updated_at),
-      title: c.title || DEFAULT_TITLE, titled: true, convId: c.id, updated: c.updated_at ?? c.created_at,
+      title: c.title || DEFAULT_TITLE, titled: true, convId: c.id, engine, updated: c.updated_at ?? c.created_at,
       mode: (c.system_prompt?.startsWith('You are Sarness Code') ? 'code' : 'chat') as Mode,
     }));
 }

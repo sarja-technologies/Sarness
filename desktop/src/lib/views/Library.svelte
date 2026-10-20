@@ -1,9 +1,9 @@
 <script lang="ts">
   import { Clapperboard, Download, FileJson, Folder, FolderOpen, FolderPlus, Heart, Image as ImageIcon, LayoutGrid, Library as LibIcon, Play, Plus, Repeat, Search, Shuffle, Star, Tag, Trash2, Undo2, X, Layers, Grid3x3, CalendarDays, Boxes } from '@lucide/svelte';
-  import { api, qs } from '../api/client';
+  import { apiFor, qs } from '../api/client';
   import { mediaUrl } from '../api/transport';
   import type { Collection, Generation, Job, Page } from '../api/types';
-  import { onEvent } from '../stores/connection.svelte';
+  import { conn, engineList, onEvent, profileName } from '../stores/connection.svelte';
   import { onGeneration } from '../stores/jobs.svelte';
   import { modelById } from '../stores/models.svelte';
   import { prefs, persistPrefs } from '../stores/prefs.svelte';
@@ -24,6 +24,15 @@
 
   let { active }: { active: boolean } = $props();
 
+  // Each server keeps its own library; with several connected, one is shown at a time.
+  let server = $state<string | null>(null);
+  const srv = $derived(server && conn.engines[server] ? server : conn.activeId);
+  const api = $derived(apiFor(srv));
+  const servers = $derived(engineList().map((e) => ({ value: e.id as string | null, label: profileName(e.id), hint: e.state === 'online' ? '' : 'offline' })));
+  // Projects and folders live on the primary server.
+  const onPrimary = $derived(srv === conn.activeId);
+  const tag = (g: Generation): Generation => ({ ...g, engine: srv ?? undefined });
+
   type Filter = { type: '' | 'image' | 'video'; favorite: boolean; trash: boolean; project_id: string | null; folder_id: string | null; collection_id: string | null; tag: string | null; model_id: string | null; since: string; q: string };
   let f = $state<Filter>({ type: '', favorite: false, trash: false, project_id: null, folder_id: null, collection_id: null, tag: null, model_id: null, since: '', q: '' });
   let items = $state<Generation[]>([]);
@@ -39,6 +48,7 @@
   let detailW = $state(380);
   let menu = $state({ open: false, x: 0, y: 0, items: [] as MenuItem[] });
   let loadedOnce = false;
+  let shownFor: string | null = null;
   let newTag = $state('');
 
   const sinceTs = $derived(f.since ? Date.now() / 1000 - Number(f.since) * 86400 : null);
@@ -51,7 +61,8 @@
         type: f.type, favorite: f.favorite ? true : undefined, trash: f.trash || undefined, project_id: f.project_id, folder_id: f.folder_id,
         collection_id: f.collection_id, tag: f.tag, model_id: f.model_id, q: f.q, since: sinceTs, limit: 80, before: reset ? undefined : cursor,
       })}`);
-      items = reset ? page.items : [...items, ...page.items.filter((g) => !items.some((x) => x.id === g.id))];
+      const got = page.items.map(tag);
+      items = reset ? got : [...items, ...got.filter((g) => !items.some((x) => x.id === g.id))];
       cursor = page.next_cursor;
       if (reset) selected = new Set();
     } catch (e) {
@@ -74,6 +85,7 @@
   $effect(() => {
     if (active && !loadedOnce) {
       loadedOnce = true;
+      shownFor = srv;
       load();
       loadSide();
     }
@@ -81,17 +93,27 @@
 
   let timer: ReturnType<typeof setTimeout>;
   $effect(() => {
+    const id = srv;
+    if (!loadedOnce || id === shownFor) return;
+    shownFor = id;
+    detail = null;
+    if (id !== conn.activeId) f = { ...f, project_id: null, folder_id: null };
+    load();
+    loadSide();
+  });
+  $effect(() => {
     JSON.stringify(f);
     clearTimeout(timer);
     if (loadedOnce) timer = setTimeout(() => load(), 180);
   });
 
   onGeneration((g) => {
+    if ((g.engine ?? conn.activeId) !== srv) return;
     if (!loadedOnce || f.trash || f.favorite || f.collection_id || f.tag || f.q) return;
     if ((f.type && g.type !== f.type) || (f.project_id && g.project_id !== f.project_id) || (f.folder_id && g.folder_id !== f.folder_id)) return;
     items = [g, ...items];
   });
-  onEvent('generations.changed', () => loadedOnce && load());
+  onEvent('generations.changed', (e) => loadedOnce && (e.engine ?? conn.activeId) === srv && load());
 
   function setScope(patch: Partial<Filter>) {
     f = { ...f, project_id: null, folder_id: null, collection_id: null, tag: null, trash: false, favorite: false, ...patch };
@@ -118,7 +140,7 @@
   async function openDetail(g: Generation) {
     detail = g;
     try {
-      detail = await api.get<Generation>(`/v1/generations/${g.id}`);
+      detail = tag(await api.get<Generation>(`/v1/generations/${g.id}`));
     } catch {
       /* keep the summary */
     }
@@ -174,7 +196,7 @@
   }
 
   async function saveTags(g: Generation, list: string[]) {
-    const out = await api.patch<Generation>(`/v1/generations/${g.id}`, { tags: list });
+    const out = tag(await api.patch<Generation>(`/v1/generations/${g.id}`, { tags: list }));
     detail = { ...detail!, tags: out.tags };
     loadSide();
   }
@@ -235,6 +257,9 @@
 <div class="lib">
   <nav class="side" style="width:{navW}px">
     <div class="sh"><h1>Library</h1></div>
+    {#if servers.length > 1}
+      <div class="srv"><Select value={srv} options={servers} size="sm" onchange={(v) => (server = v)} /></div>
+    {/if}
     <div class="group">
       <button class:on={!f.type && !f.favorite && !f.trash && !f.project_id && !f.collection_id && !f.tag} onclick={() => { f.type = ''; setScope({}); }}><LayoutGrid />Everything</button>
       <button class:on={f.type === 'image' && !f.trash} onclick={() => { f.type = 'image'; f.trash = false; }}><ImageIcon />Images</button>
@@ -242,6 +267,7 @@
       <button class:on={f.favorite} onclick={() => setScope({ favorite: true })}><Heart />Favorites</button>
       <button class:on={f.trash} onclick={() => setScope({ trash: true })}><Trash2 />Trash</button>
     </div>
+    {#if onPrimary}
     <div class="label">Projects <IconButton label="New project" size="sm" onclick={async () => { const n = await promptDialog('New project', '', { confirmLabel: 'Create' }); if (n) createProject(n); }}><Plus /></IconButton></div>
     <div class="group">
       <button class:on={f.project_id === 'none'} onclick={() => setScope({ project_id: 'none' })}><Folder />Unfiled</button>
@@ -260,6 +286,7 @@
         {@render tree(folderTree(p))}
       {/each}
     </div>
+    {/if}
     {#if collections.length}
       <div class="label">Collections</div>
       <div class="group">
@@ -320,7 +347,7 @@
         {#each items as g, i (g.id)}
           <button class="card" class:sel={selected.has(g.id)} onclick={(e) => click(e, g, i)} draggable="true" ondragstart={(e) => dragStart(e, g)}
             ondblclick={() => openDetail(g)}>
-            <img src={mediaUrl(g.thumb_url)} alt={g.prompt ?? ''} loading="lazy" decoding="async" />
+            <img src={mediaUrl(g.thumb_url, srv)} alt={g.prompt ?? ''} loading="lazy" decoding="async" />
             {#if g.type === 'video'}<span class="vb"><Play />{duration(g.duration)}</span>{/if}
             {#if g.favorite}<span class="fav"><Star /></span>{/if}
             <span class="cap">{g.prompt}</span>
@@ -341,9 +368,9 @@
       <div class="dprev">
         {#if detail.type === 'video'}
           <!-- svelte-ignore a11y_media_has_caption -->
-          <video src={mediaUrl(detail.url)} controls loop autoplay muted></video>
+          <video src={mediaUrl(detail.url, srv)} controls loop autoplay muted></video>
         {:else}
-          <img src={mediaUrl(detail.url)} alt="" />
+          <img src={mediaUrl(detail.url, srv)} alt="" />
         {/if}
       </div>
       <div class="dacts">
@@ -393,6 +420,7 @@
 <Menu bind:open={menu.open} bind:x={menu.x} bind:y={menu.y} bind:items={menu.items} />
 
 <style>
+  .srv { padding: 0 12px 8px; }
   .lib { display: flex; height: 100%; min-height: 0; }
   .side { flex-shrink: 0; overflow-y: auto; background: var(--bg-1); padding: 0 10px 20px; }
   .sh { height: 56px; display: flex; align-items: center; padding: 0 8px; }

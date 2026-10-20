@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Conversation } from '../api/types';
-import { mediaContext, buildTimeline, createSessionObject, groupByRecency, hydrate, matchesQuery, missingFromServer, titleFromPrompt, type GenEntry } from './sessions';
+import { adoptLegacy, mediaContext, buildTimeline, createSessionObject, groupByRecency, hydrate, matchesQuery, missingFromServer, titleFromPrompt, type GenEntry } from './sessions';
 
 const entry = (id: string, created: number, prompt = 'p'): GenEntry => ({ id, mode: 'image', jobId: `j${id}`, prompt, created, summary: [] });
 const conv = (id: string, extra: Partial<Conversation> = {}) => ({ id, title: `T${id}`, created_at: 100, updated_at: 200, system_prompt: '', ...extra }) as Conversation;
@@ -75,5 +75,29 @@ describe('media context for the language model', () => {
     const c = mediaContext(many, 3);
     expect(c).toContain('prompt-19');
     expect(c).not.toContain('prompt-10');
+  });
+});
+
+describe('multi-server sessions', () => {
+  it('loads v1 data with no server and assigns it to the server connected at the time', () => {
+    const [s] = hydrate([{ id: 's1', convId: 'c1', entries: [{ jobId: 'j1', mode: 'image', id: 'e', prompt: 'x', created: 1, summary: [] }] }]);
+    expect(s.engine).toBeNull();
+    expect(s.route).toBeNull();
+    expect(s.formerConvs).toEqual([]);
+    expect(adoptLegacy([s], 'rtx')).toBe(true);
+    expect(s.engine).toBe('rtx');
+    expect(s.entries[0].engine).toBe('rtx');
+    expect(adoptLegacy([s], 'spark')).toBe(false); // only once: never re-assigned later
+    expect(s.engine).toBe('rtx');
+  });
+  it('keeps the server of new data across save and load', () => {
+    const s = { ...createSessionObject(), convId: 'c9', engine: 'spark', route: 'spark', formerConvs: [{ engine: 'rtx', convId: 'c1' }] };
+    const [back] = hydrate(JSON.parse(JSON.stringify([s])));
+    expect([back.engine, back.route, back.formerConvs]).toEqual(['spark', 'spark', [{ engine: 'rtx', convId: 'c1' }]]);
+  });
+  it('imports conversations per server, and not the copies left behind by a move', () => {
+    const s = { ...createSessionObject(), convId: 'c2', engine: 'spark', formerConvs: [{ engine: 'rtx', convId: 'c1' }] };
+    expect(missingFromServer([s], [conv('c1'), conv('c3')], 'rtx').map((a) => [a.convId, a.engine])).toEqual([['c3', 'rtx']]);
+    expect(missingFromServer([s], [conv('c2')], 'spark')).toHaveLength(0);
   });
 });

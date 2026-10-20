@@ -1,6 +1,6 @@
 <script lang="ts">
   import { ImagePlus, X, Brush } from '@lucide/svelte';
-  import { api } from '../api/client';
+  import { apiFor } from '../api/client';
   import { mediaUrl } from '../api/transport';
   import { toastError } from '../stores/toast.svelte';
   import IconButton from '../ui/IconButton.svelte';
@@ -13,8 +13,11 @@
     accept?: string;
     onpaint?: () => void;
     painted?: boolean;
+    /** Server to upload to (null = primary), and the map recording which server holds each file. */
+    engine?: string | null;
+    files?: Record<string, string>;
   }
-  let { fileId = $bindable(), label = 'Reference image', hint = 'Drop an image or click to browse', accept = 'image/*', onpaint, painted = false }: Props = $props();
+  let { fileId = $bindable(), label = 'Reference image', hint = 'Drop an image or click to browse', accept = 'image/*', onpaint, painted = false, engine = null, files }: Props = $props();
   let uploading = $state(false);
   let over = $state(false);
   let input: HTMLInputElement;
@@ -23,7 +26,8 @@
     if (!f) return;
     uploading = true;
     try {
-      const r = await api.upload(f, f.name);
+      const r = await apiFor(engine).upload(f, f.name);
+      if (files && engine) files[r.id] = engine;
       fileId = r.id;
     } catch (e) {
       toastError(e, 'Upload failed');
@@ -50,7 +54,7 @@
   {#if uploading}
     <Spinner />
   {:else if fileId}
-    <img src={mediaUrl(`/v1/files/${fileId}`)} alt="" />
+    <img src={mediaUrl(`/v1/files/${fileId}`, files?.[fileId] ?? engine)} alt="" />
     <div class="tools">
       {#if onpaint}<IconButton label={painted ? 'Edit mask' : 'Paint inpaint mask'} size="sm" active={painted} onclick={(e) => { e.stopPropagation(); onpaint(); }}><Brush /></IconButton>{/if}
       <IconButton label="Remove" size="sm" onclick={(e) => { e.stopPropagation(); fileId = null; }}><X /></IconButton>
