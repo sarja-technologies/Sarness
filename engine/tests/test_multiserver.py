@@ -589,3 +589,15 @@ def test_any_loaded_model_can_be_unloaded_from_the_models_list(client):
     assert not next(m for m in client.get("/v1/models").json() if m["id"] == mid)["loaded"]
     assert sup.last_status["loaded"] == [{"key": "video:other", "vram_mb": 1}]
     assert client.post("/v1/models/not-loaded/unload").json() == {"ok": True}, "unloading is idempotent"
+
+
+def test_a_job_whose_worker_was_killed_for_memory_fails_instead_of_retrying(client):
+    jobs = client.app.state.sarness.jobs
+    ids = [jobs.submit(kind="image", simple={"model": "image:my-sdxl", "prompt": p})["id"]
+           for p in ("a", "b")]
+    jobs._on_worker_crash(ids[0], "GPU worker exited unexpectedly (exit code 1)", True)
+    jobs._on_worker_crash(ids[1], "The GPU worker was stopped by the system for running out of memory.", False)
+    first, second = (client.get(f"/v1/jobs/{i}").json() for i in ids)
+    assert first["status"] == "queued" and first["attempts"] == 1, "an ordinary crash is retried"
+    assert second["status"] == "failed" and "out of memory" in second["error"]["message"], \
+        "running the same job again would only exhaust memory again"

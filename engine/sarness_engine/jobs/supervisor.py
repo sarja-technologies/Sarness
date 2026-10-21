@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import multiprocessing as mp
+import signal
 import threading
 import time
 from typing import Any, Callable
@@ -16,7 +17,7 @@ HARD_CANCEL_AFTER_S = 25.0
 
 class WorkerSupervisor:
     def __init__(self, options: dict[str, Any], on_message: Callable[[dict[str, Any]], None],
-                 on_crash: Callable[[str | None, str], None]):
+                 on_crash: Callable[[str | None, str, bool], None]):
         self.options = options
         self.on_message = on_message
         self.on_crash = on_crash
@@ -180,4 +181,9 @@ class WorkerSupervisor:
         self._ready.set()
         if not self._expected_exit:
             log.error("GPU worker exited unexpectedly (code %s)", code)
-            self.on_crash(job, f"GPU worker exited unexpectedly (exit code {code})")
+            if code == -signal.SIGKILL:
+                # Almost always the kernel's out-of-memory killer: running the same job again would repeat it.
+                self.on_crash(job, "The GPU worker was stopped by the system for running out of memory. Try a "
+                                   "smaller size, fewer frames or unloading other models.", False)
+            else:
+                self.on_crash(job, f"GPU worker exited unexpectedly (exit code {code})", True)
