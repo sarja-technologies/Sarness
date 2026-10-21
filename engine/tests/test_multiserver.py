@@ -384,6 +384,28 @@ def test_audio_is_muxed_into_mp4(tmp_path):
     assert not list(tmp_path.glob("*.wav")) and not list(tmp_path.glob("*.muxed.*"))
 
 
+def test_a_soundtrack_never_cuts_frames_off_the_clip(tmp_path):
+    pytest.importorskip("imageio_ffmpeg")
+
+    import imageio.v2 as iio
+    import imageio_ffmpeg
+    import numpy as np
+
+    from sarness_engine.workflow.nodes.output import _mux_audio
+
+    # LTX-2 returns 121 frames at 24 fps (5.04 s) with a 5.01 s soundtrack; ffmpeg's -shortest dropped 4 frames.
+    for secs in (5.01, 5.3):
+        path = tmp_path / f"clip{secs}.mp4"
+        w = iio.get_writer(str(path), format="FFMPEG", fps=24, codec="libx264", macro_block_size=1,
+                           ffmpeg_params=["-pix_fmt", "yuv420p"])
+        for i in range(121):
+            w.append_data(np.full((64, 64, 3), i * 2, dtype=np.uint8))
+        w.close()
+        audio = np.zeros((2, int(secs * 24000)), dtype=np.float32)
+        assert _mux_audio(path, {"samples": audio, "rate": 24000}, "mp4", 121 / 24)
+        assert imageio_ffmpeg.count_frames_and_secs(str(path))[0] == 121, secs
+
+
 def test_downloads_resume_after_restart_oldest_first(tmp_path):
     from sarness_engine.models.downloads import DownloadManager
 
