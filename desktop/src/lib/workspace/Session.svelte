@@ -527,6 +527,9 @@
         const id = body[k];
         if (typeof id === 'string' && id) body[k] = await fileOn(id, homes[id] ?? session.files[id] ?? conn.activeId, r.engine);
       }
+      if (Array.isArray(body.extra_references)) {
+        body.extra_references = await Promise.all((body.extra_references as string[]).map((id) => fileOn(id, homes[id] ?? session.files[id] ?? conn.activeId, r.engine)));
+      }
       const job = await submitJob({ kind: m, simple: body, ...destFor(r.engine) }, r.engine);
       addEntry(m, job, prompt, multi ? [...summary, `on ${profileName(r.engine)}`] : summary);
       return true;
@@ -541,7 +544,7 @@
   async function sendMedia() {
     const m = mode as 'image' | 'video';
     const text = session.draft.trim();
-    const blocker = mediaBlocker(m, text, m === 'image' ? session.image : session.video);
+    const blocker = mediaBlocker(m, text, m === 'image' ? session.image : session.video, m === 'image' ? imageModel : videoModel);
     if (blocker) return toast('warning', blocker);
     const simple = m === 'image' ? imageSimpleParams(session.image, text, imageModel) : videoSimpleParams(session.video, text, videoModel);
     if (!session.titled) {
@@ -613,7 +616,9 @@
       p.vae = s.vae ?? null;
       p.reference_image = s.reference_image ?? null;
       p.mask_image = s.mask_image ?? null;
-      for (const f of [p.reference_image, p.mask_image]) if (f && g.engine) session.files[f] = g.engine;
+      p.extra_references = s.extra_references ?? [];
+      p.style = s.style ?? 'none';
+      for (const f of [p.reference_image, p.mask_image, ...p.extra_references]) if (f && g.engine) session.files[f] = g.engine;
       if (s.denoise) p.denoise = s.denoise;
       if (typeof s.seed === 'number') { p.seed = s.seed; p.random_seed = false; }
       const match = ASPECTS.find((a) => Math.abs(a.w / a.h - (s.width ?? 1) / (s.height ?? 1)) < 0.03);

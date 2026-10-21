@@ -49,12 +49,34 @@ export interface ImageSettings {
   upscale_factor: number;
   format: string;
   clip_skip: number;
+  /** Prompt style applied by the engine for any model ("iphone": an ordinary iPhone photo). */
+  style: string;
+  /** Further images for multi-reference editing models; reference_image is the first. */
+  extra_references: string[];
 }
+
+/** Styles the engine knows (workflow/styles.py). */
+export const IMAGE_STYLES = [
+  { value: 'none', label: 'None' },
+  { value: 'iphone', label: 'iPhone / candid photo' },
+];
+
+/** Editing models (Qwen-Image-Edit, FLUX.2) use the reference image as the picture to change, not as a start. */
+export const editsReference = (model?: InstalledModel) => {
+  const modes: string[] = model?.capabilities?.modes ?? [];
+  return modes.includes('edit') && !modes.includes('img2img');
+};
+
+/** Models that cannot generate without a reference image. */
+export const needsReference = (model?: InstalledModel) => {
+  const modes: string[] | undefined = model?.capabilities?.modes;
+  return !!modes && !modes.includes('txt2img');
+};
 
 export const imageDefaults = (): ImageSettings => ({
   model: null, negative_prompt: '', aspect: '1:1', size: 'M', quality: 'balanced', batch_size: 1, seed: 0, random_seed: true,
   steps: 30, guidance: 6, scheduler: 'default', denoise: 0.65, reference_image: null, mask_image: null, loras: [], vae: null,
-  memory_mode: 'auto', upscale_model: null, upscale_factor: 2, format: 'png', clip_skip: 0,
+  memory_mode: 'auto', upscale_model: null, upscale_factor: 2, format: 'png', clip_skip: 0, style: 'none', extra_references: [],
 });
 
 export function imageDims(s: ImageSettings, model?: InstalledModel): [number, number] {
@@ -97,6 +119,8 @@ export function imageSimpleParams(s: ImageSettings, prompt: string, model?: Inst
     upscale: s.upscale_model ? { model: s.upscale_model, factor: s.upscale_factor } : null,
     format: s.format,
     clip_skip: s.clip_skip,
+    style: s.style || 'none',
+    extra_references: s.reference_image ? s.extra_references.slice(0, Math.min(2, Math.max(0, (caps.references ?? 1) - 1))) : [],
     ...overrides,
   };
 }
@@ -166,9 +190,10 @@ export function videoSimpleParams(s: VideoSettings, prompt: string, model?: Inst
 }
 
 /** Why a media request cannot be sent yet, or null when it is ready. */
-export function mediaBlocker(mode: 'image' | 'video', prompt: string, s: ImageSettings | VideoSettings): string | null {
+export function mediaBlocker(mode: 'image' | 'video', prompt: string, s: ImageSettings | VideoSettings, model?: InstalledModel): string | null {
   if (!s.model) return `Choose a ${mode} model first`;
   if (!prompt.trim()) return 'Write a prompt first';
+  if (mode === 'image' && needsReference(model) && !(s as ImageSettings).reference_image) return 'Add the image to edit first';
   if (mode === 'video' && (s as VideoSettings).vmode === 'i2v' && !(s as VideoSettings).start_image) return 'Add a start frame for image-to-video';
   return null;
 }
@@ -177,7 +202,9 @@ export function mediaBlocker(mode: 'image' | 'video', prompt: string, s: ImageSe
 export function summaryFor(mode: Mode, s: { image: ImageSettings; video: VideoSettings }, model?: InstalledModel, chat?: { temperature?: number; ctx?: number }): string[] {
   if (mode === 'image') {
     const [w, h] = imageDims(s.image, model);
-    return [s.image.aspect, `${w}×${h}`, `${s.image.steps} steps`, s.image.random_seed ? 'random seed' : `seed ${s.image.seed}`, ...(s.image.reference_image ? [`edit ${s.image.denoise.toFixed(2)}`] : [])];
+    const style = IMAGE_STYLES.find((x) => x.value === s.image.style && x.value !== 'none');
+    const ref = s.image.reference_image ? [editsReference(model) ? `edit · ${1 + s.image.extra_references.length} image${s.image.extra_references.length ? 's' : ''}` : `edit ${s.image.denoise.toFixed(2)}`] : [];
+    return [...(style ? [style.label] : []), s.image.aspect, `${w}×${h}`, `${s.image.steps} steps`, s.image.random_seed ? 'random seed' : `seed ${s.image.seed}`, ...ref];
   }
   if (mode === 'video') {
     const [w, h] = videoDims(s.video, model);
