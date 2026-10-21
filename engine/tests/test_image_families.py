@@ -279,3 +279,26 @@ def test_unified_memory_drops_model_files_from_the_page_cache_and_never_offloads
     monkeypatch.setattr(rm, "cuda_available", lambda: True)
     monkeypatch.setattr(mm, "make_room", lambda need, keep=None: None)
     assert [mm._choose_mode(m, 50_000, set()) for m in ("auto", "gpu", "offload", "sequential")] == ["gpu"] * 4
+
+
+def test_task_variants_keep_the_loaded_pipelines_dtype(monkeypatch):
+    torch = pytest.importorskip("torch")
+    diffusers = pytest.importorskip("diffusers")
+
+    from sarness_engine.workflow.nodes import diffusion as d
+
+    seen = []
+
+    class Variant:
+        @classmethod
+        def from_pipe(cls, base, **kw):
+            seen.append(kw)
+            return SimpleNamespace(set_progress_bar_config=lambda **k: None)
+
+    monkeypatch.setattr(diffusers, "QwenImageInpaintPipeline", Variant, raising=False)
+    base = SimpleNamespace(transformer=SimpleNamespace(dtype=torch.bfloat16))
+    h = SimpleNamespace(pipe=base)
+    first = d._native_pipe(h, "QwenImageInpaintPipeline")
+    assert d._native_pipe(h, "QwenImageInpaintPipeline") is first and d._native_pipe(h, None) is base
+    # Without an explicit dtype diffusers casts the shared weights to float32 in place: twice the memory.
+    assert seen == [{"dtype": torch.bfloat16}]

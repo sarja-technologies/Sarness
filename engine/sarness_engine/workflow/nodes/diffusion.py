@@ -335,7 +335,9 @@ def _native_pipe(handle, cls_name: str | None):
         return base
     cache = base.__dict__.setdefault("_sarness_denoise", {})
     if cls_name not in cache:
-        sub = getattr(diffusers, cls_name).from_pipe(base)
+        # from_pipe() casts the shared components to float32 unless told otherwise: in place, doubling the
+        # model's memory (Qwen-Image 53 → 106 GB) and changing the loaded pipeline for later jobs too.
+        sub = getattr(diffusers, cls_name).from_pipe(base, dtype=base.transformer.dtype)
         sub.set_progress_bar_config(disable=True)
         cache[cls_name] = sub
     return cache[cls_name]
