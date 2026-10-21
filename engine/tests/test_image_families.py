@@ -220,3 +220,38 @@ def test_evicting_a_model_to_make_room_notifies_the_node_cache(monkeypatch):
     monkeypatch.setattr(rm, "free_vram_mb", lambda: 0)
     mm.make_room(50_000, keep={"image:q"})
     assert mm.loaded_keys() == ["image:q"] and len(cache) == 0
+
+
+def test_packed_attention_matches_the_dense_padding_mask():
+    torch = pytest.importorskip("torch")
+    import torch.nn.functional as F
+
+    from sarness_engine.runtime.attention import packed, padding_vector
+
+    calls = []
+
+    def sdpa(q, k, v, attn_mask=None, **kw):  # (batch, seq, heads, dim) like diffusers' dispatch_attention_fn
+        calls.append(attn_mask)
+        o = F.scaled_dot_product_attention(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), attn_mask=attn_mask)
+        return o.transpose(1, 2)
+
+    torch.manual_seed(0)
+    q, k, v = (torch.randn(2, 14, 3, 8) for _ in range(3))
+    # Built exactly as diffusers' HunyuanVideo15AttnProcessor2_0 does: video tokens, then text tokens with padding.
+    text = torch.tensor([[1] * 4 + [0] * 2, [1] * 6], dtype=torch.bool)
+    valid = F.pad(text, (14 - text.shape[1], 0), value=True)
+    m1 = valid.view(2, 1, 1, 14).repeat(1, 1, 14, 1)
+    mask = m1 & m1.transpose(2, 3)
+    assert torch.equal(padding_vector(mask, 14), valid)
+
+    ref = sdpa(q, k, v, attn_mask=mask)
+    calls.clear()
+    out = packed(sdpa)(q, k, v, attn_mask=mask, dropout_p=0.0)
+    assert all(c is None for c in calls), "the wrapped kernel never sees a mask"
+    assert torch.allclose(out[valid], ref[valid], atol=1e-5)
+    assert not out[~valid].any(), "padded positions are zeros"
+    # Any other mask passes through untouched.
+    causal = torch.ones(14, 14, dtype=torch.bool).tril().view(1, 1, 14, 14).expand(2, 1, 14, 14)
+    assert padding_vector(causal, 14) is None
+    assert torch.allclose(packed(sdpa)(q, k, v, attn_mask=causal), sdpa(q, k, v, attn_mask=causal))
+    assert packed(packed(sdpa)) is not sdpa and getattr(packed(sdpa), "_sarness_packed")

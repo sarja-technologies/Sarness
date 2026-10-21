@@ -454,6 +454,10 @@ class ModelManager:
         pipe._sarness_default_scheduler = pipe.scheduler
         if family.startswith("hunyuanvideo15"):
             pipe.vae.enable_tiling()  # its 720p decode otherwise needs tens of GB at once
+            from .attention import pack_hunyuan_video15_attention
+
+            if not pack_hunyuan_video15_attention():
+                log.warning("HunyuanVideo 1.5 attention could not be packed; it runs with dense masks (slow)")
         self.make_room(est, keep={key})
         mode = self._choose_mode(memory_mode, est, keep={key})
         if mode == "split":
