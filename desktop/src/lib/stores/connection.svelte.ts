@@ -397,7 +397,10 @@ export async function initConnection() {
   });
   const info = await invoke<ProxyInfo>('proxy_info');
   setTransport(proxyTransport(info.url, info.session, info.connected));
-  const ids = connected.filter((id) => conn.profiles.some((p) => p.id === id));
+  let ids = connected.filter((id) => conn.profiles.some((p) => p.id === id));
+  // Saved servers with a token are never left disconnected at start-up: an emptied auto-connect list
+  // (every server disconnected in an earlier session) would otherwise look like being logged out.
+  if (!ids.length) ids = conn.profiles.filter((p) => p.has_token).map((p) => p.id);
   if (!ids.length || !conn.profiles.length) {
     conn.state = 'unconfigured';
     return;

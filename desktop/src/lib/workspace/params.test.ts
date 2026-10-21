@@ -125,7 +125,7 @@ describe('editing models and styles', () => {
     expect(imageSimpleParams(s, 'x', editModel).extra_references).toEqual([]);
     s.reference_image = 'a';
     expect(imageSimpleParams(s, 'x', editModel).extra_references).toEqual(['b', 'c']);
-    expect(imageSimpleParams(s, 'x', imgModel).extra_references).toEqual([], 'a model without editing takes none');
+    expect(imageSimpleParams(s, 'x', imgModel).extra_references).toEqual([]); // a model without editing takes none
   });
 
   it('tells edit-only models apart and blocks them without an image to edit', () => {
