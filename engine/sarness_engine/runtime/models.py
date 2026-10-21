@@ -164,6 +164,8 @@ class ModelManager:
     def __init__(self, headroom_mb: int = 600):
         self._cache: OrderedDict[str, _Loaded] = OrderedDict()
         self.headroom_mb = headroom_mb
+        # Called with the key of every evicted model, whatever the reason (making room, release, shutdown).
+        self.on_evict: list[Any] = []
 
     # ---------------------------------------------------------------- status
     def status(self) -> list[dict[str, Any]]:
@@ -187,6 +189,8 @@ class ModelManager:
         if item is None:
             return
         log.info("unloading %s", key)
+        for hook in self.on_evict:
+            hook(key)
         obj = item.obj[0] if isinstance(item.obj, tuple) else item.obj
         # Move weights off the GPU explicitly: this frees VRAM even if stray
         # references (caches, tracebacks) keep the Python objects alive. With unified memory a copy to

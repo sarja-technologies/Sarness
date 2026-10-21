@@ -202,3 +202,21 @@ def test_hunyuan_video_sets_guidance_on_its_guider_and_crops_the_start_frame():
         assert ("height" in pipe.kw) == (start is None), "image-to-video takes its size from the start frame"
         assert ctx.steps[-1][:2] == (1, 30), "progress comes from the scheduler's steps"
         assert "step" not in vars(pipe.scheduler), "the scheduler is restored afterwards"
+
+
+def test_evicting_a_model_to_make_room_notifies_the_node_cache(monkeypatch):
+    torch = pytest.importorskip("torch")
+
+    from sarness_engine.runtime import models as rm
+    from sarness_engine.workflow.executor import NodeCache
+
+    # A cached loader output kept the handle of an evicted model, whose weights were already dropped:
+    # the next img2img job on that model then ran on empty (meta) tensors instead of reloading it.
+    mm, cache = rm.ModelManager(), NodeCache()
+    mm.on_evict.append(lambda key: cache.clear())
+    mm._cache["image:z"] = rm._Loaded(torch.nn.Linear(2, 2), 1000, "image", "gpu")
+    mm._cache["image:q"] = rm._Loaded(torch.nn.Linear(2, 2), 1000, "image", "gpu")
+    cache.put("loader:z", {"model": "handle of image:z"})
+    monkeypatch.setattr(rm, "free_vram_mb", lambda: 0)
+    mm.make_room(50_000, keep={"image:q"})
+    assert mm.loaded_keys() == ["image:q"] and len(cache) == 0

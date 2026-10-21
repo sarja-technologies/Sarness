@@ -82,6 +82,9 @@ def worker_main(conn, options: dict[str, Any]) -> None:  # pragma: no cover - ex
     models = ModelManager(headroom_mb=int(options.get("headroom_mb", 600)))
     services = _Services(models, Path(options["outputs_dir"]))
     cache = NodeCache()
+    # Cached node outputs hold model handles: once a model is evicted (also to make room for another) its
+    # weights are gone, so a cached handle must never be reused.
+    models.on_evict.append(lambda key: cache.clear())
     jobs: queue.Queue = queue.Queue()
     cancel_events: dict[str, threading.Event] = {}
     stop = threading.Event()
