@@ -23,6 +23,27 @@ def installed(category: str | None = None, st: AppState = Depends(require_auth))
     return [m for m in items if not category or m["category"] == category]
 
 
+@router.post("/models/{model_id:path}/unload")
+async def unload_model(model_id: str, st: AppState = Depends(require_auth)):
+    """Frees the memory of any loaded model: the chat model, or an image/video/other model held by the GPU
+    worker (the worker itself keeps running until its idle timeout)."""
+    if st.llama.status().get("model_id") == model_id:
+        if st.llama.active_streams:
+            raise HTTPException(409, "the model is generating a response")
+        await asyncio.to_thread(st.llama.unload)
+        st.bus.publish("llm.status", st.llama.status())
+    else:
+        sup = st.jobs.supervisor
+        keys = [m["key"] for m in sup.last_status.get("loaded", []) if m["key"].split(":", 1)[-1] == model_id]
+        if keys:
+            if sup.busy:
+                raise HTTPException(409, "an image or video job is running; wait for it or cancel it first")
+            for key in keys:
+                await asyncio.to_thread(sup.release, key, 60.0)
+    st.bus.publish("models.changed", {})
+    return {"ok": True}
+
+
 @router.post("/models/rescan")
 async def rescan(st: AppState = Depends(require_auth)):
     items = await asyncio.to_thread(st.registry.scan)

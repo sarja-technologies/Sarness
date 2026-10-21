@@ -1,6 +1,7 @@
 <script lang="ts">
   import { Boxes, CircleAlert, CircleCheck, Cpu, Download, ExternalLink, HardDrive, Pause, Play, Power, RefreshCw, Search, Trash2, X, Zap } from '@lucide/svelte';
   import { openUrl } from '@tauri-apps/plugin-opener';
+  import { untrack } from 'svelte';
   import { apiFor, qs } from '../api/client';
   import type { CatalogEntry, Compatibility, Download as DL, HardwarePreset, HfInspect, HfSearchResult, InstalledModel } from '../api/types';
   import { conn, engineList, onEvent, profileName } from '../stores/connection.svelte';
@@ -64,6 +65,18 @@
     refreshAll();
   });
 
+  // "Loaded" badges change as jobs load models and idle timers unload them: refresh when the screen is
+  // opened again and when a job on this server finishes while it is open.
+  let wasActive = false;
+  $effect(() => {
+    const now = active;
+    if (now && !wasActive && loadedOnce) untrack(() => loadModels(srv)).catch(() => {});
+    wasActive = now;
+  });
+  onEvent('job.updated', (e) => {
+    if (active && mineEvent(e) && ['completed', 'failed', 'cancelled'].includes(e.data?.status)) loadModels(srv).catch(() => {});
+  });
+
   async function refreshAll() {
     try {
       await Promise.all([loadCatalog(srv), loadModels(srv)]);
@@ -115,6 +128,21 @@
       loadModels(srv);
     } catch (e) {
       toastError(e);
+    }
+  }
+
+  let unloading = $state<string | null>(null);
+
+  async function unload(m: InstalledModel) {
+    unloading = m.id;
+    try {
+      await api.post(`/v1/models/${encodeURIComponent(m.id)}/unload`);
+      toast('success', 'Model unloaded', m.name);
+      loadModels(srv);
+    } catch (e) {
+      toastError(e, 'Could not unload model');
+    } finally {
+      unloading = null;
     }
   }
 
@@ -210,6 +238,8 @@
                   {#if m.category === 'llm'}
                     {#if m.loaded}<Button size="sm" variant="ghost" onclick={() => llm(m, false)}><Power />Unload</Button>
                     {:else}<Button size="sm" variant="ghost" onclick={() => llm(m, true)}><Zap />Load</Button>{/if}
+                  {:else if m.loaded}
+                    <Button size="sm" variant="ghost" loading={unloading === m.id} onclick={() => unload(m)}><Power />Unload</Button>
                   {/if}
                   {#if !m.remote}<IconButton label="Delete model files" tone="danger" onclick={() => removeModel(m)}><Trash2 /></IconButton>{/if}
                 </div>

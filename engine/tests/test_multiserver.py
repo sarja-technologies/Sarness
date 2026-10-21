@@ -538,3 +538,32 @@ def test_stopping_the_gpu_worker_survives_the_reader_seeing_it_exit():
     sup._proc, sup._conn = Proc(), SimpleNamespace(send=lambda msg: None)
     sup.stop()
     assert sup._proc is None and not sup.alive
+
+
+def test_any_loaded_model_can_be_unloaded_from_the_models_list(client):
+    """Image/video models held by the GPU worker get the same Unload as the chat model."""
+    st = client.app.state.sarness
+    mid = next(m["id"] for m in client.get("/v1/models").json() if m["category"] == "image")
+    released = []
+
+    class Sup:
+        busy = True
+        last_status = {"loaded": [{"key": f"image:{mid}", "vram_mb": 9000}, {"key": "video:other", "vram_mb": 1}]}
+
+        def release(self, key=None, wait=0.0):
+            released.append((key, wait))
+            self.last_status = {"loaded": [m for m in self.last_status["loaded"] if m["key"] != key]}
+
+        def stop(self):
+            pass
+
+    st.jobs.supervisor = sup = Sup()
+    assert next(m for m in client.get("/v1/models").json() if m["id"] == mid)["loaded"]
+    r = client.post(f"/v1/models/{mid}/unload")
+    assert r.status_code == 409 and "job is running" in r.json()["detail"] and not released
+    sup.busy = False
+    assert client.post(f"/v1/models/{mid}/unload").json() == {"ok": True}
+    assert released == [(f"image:{mid}", 60.0)], "only that model is released, and the call waits for it"
+    assert not next(m for m in client.get("/v1/models").json() if m["id"] == mid)["loaded"]
+    assert sup.last_status["loaded"] == [{"key": "video:other", "vram_mb": 1}]
+    assert client.post("/v1/models/not-loaded/unload").json() == {"ok": True}, "unloading is idempotent"

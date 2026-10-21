@@ -109,7 +109,7 @@ def worker_main(conn, options: dict[str, Any]) -> None:  # pragma: no cover - ex
                 if ev:
                     ev.set()
             elif t == "release":
-                jobs.put({"type": "release"})
+                jobs.put({"type": "release", "key": msg.get("key")})
             elif t == "status":
                 send(status())
             elif t == "shutdown":
@@ -128,8 +128,11 @@ def worker_main(conn, options: dict[str, Any]) -> None:  # pragma: no cover - ex
         if msg is None:
             break
         if msg.get("type") == "release":
-            models.unload_all()
-            cache.clear()
+            if msg.get("key"):
+                models.evict(msg["key"])
+            else:
+                models.unload_all()
+            cache.clear()  # cached node outputs can hold the released model's tensors
             send(status())
             continue
         job_id = msg["job_id"]

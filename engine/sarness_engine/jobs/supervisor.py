@@ -32,6 +32,7 @@ class WorkerSupervisor:
         self._ready = threading.Event()
         self._cancel_deadline: float | None = None
         self._expected_exit = False
+        self._status = threading.Event()
 
     # ------------------------------------------------------------- lifecycle
     @property
@@ -108,9 +109,14 @@ class WorkerSupervisor:
             return
         self._cancel_deadline = time.time() + HARD_CANCEL_AFTER_S
 
-    def release(self) -> None:
+    def release(self, key: str | None = None, wait: float = 0.0) -> None:
+        """Unloads one cached model (``key``) or all of them. With ``wait`` it blocks until the worker
+        reports its new status, so ``last_status`` is current when it returns."""
         if self.alive and not self.busy:
-            self._send({"type": "release"})
+            self._status.clear()
+            self._send({"type": "release", "key": key})
+            if wait:
+                self._status.wait(wait)
 
     def request_status(self) -> None:
         if self.alive:
@@ -149,6 +155,7 @@ class WorkerSupervisor:
                 continue
             if t == "status":
                 self.last_status = msg
+                self._status.set()
             if t in ("done", "failed", "cancelled"):
                 if msg.get("job_id") == self.current_job:
                     self.current_job = None
