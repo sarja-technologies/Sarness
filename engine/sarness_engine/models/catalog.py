@@ -343,7 +343,7 @@ CATALOG: list[dict[str, Any]] = [
         "repo": "Tongyi-MAI/Z-Image-Turbo",
         "files": DIFFUSERS_FILES,
         "size_gb": 32.8,
-        "vram_mb": 26000, "vram_offload_mb": 26000,
+        "vram_mb": 32000, "vram_offload_mb": 32000,
         "description": "Fast photorealistic 6B model from Tongyi: 8-step distilled, strong at people and everyday "
                        "scenes. Text-to-image, image-to-image and inpainting.",
         "defaults": {"steps": 9, "guidance": 0.0, "width": 1024, "height": 1024},
