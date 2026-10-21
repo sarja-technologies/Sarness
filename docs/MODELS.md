@@ -120,9 +120,9 @@ tested on every model above (56 images in all) and gives deeper focus, phone-lik
 | Qwen-Image-Edit-2511 | two references (person into another room) | 455 s | | Identity kept; the room is only loosely the second image's |
 | Qwen-Image-Edit-2511 | change a sign's text | 277 s | | Exact new text in the same handwriting |
 | FLUX.2 Klein 4B | the same three edits | 6.6–10.4 s | 19 GB | Good single edit; the sign text came out wrong; second reference pasted in rather than combined |
-| Z-Image-Turbo | img2img (strength 0.55, iPhone style) | 7.8 s | 34 GB | |
-| Qwen-Image-2512 | img2img (strength 0.6) | 98 s | 55 GB | |
-| Z-Image-Turbo / FLUX.2 Klein 4B / Qwen-Image-2512 | inpaint (strength 0.9, cake into a masked table) | 12.8 s / 6.7 s / 114 s | 28 / 16 / 55 GB | All three blend the new object into the scene |
+| Z-Image-Turbo | img2img (strength 0.55, iPhone style) | 7.8 s | 34 GB | Composition kept, faces lightly changed |
+| Qwen-Image-2512 | img2img (strength 0.6) | 98 s | 55 GB | Composition kept; faces change more |
+| Z-Image-Turbo / FLUX.2 Klein 4B / Qwen-Image-2512 | inpaint (strength 0.9, cake into a masked table) | 12.8 s / 6.7 s / 114 s | 28 / 16 / 55 GB | Z-Image and Klein: a convincing lit cake, rest untouched; Qwen: a small cake on a tall stand, no candles |
 
 **Low-refusal chat models** (llama.cpp, context 32 768; twelve prompts: two reasoning, coding checked by running the
 code, instruction following, knowledge, a 200-word story, six borderline requests that stock models often refuse;
