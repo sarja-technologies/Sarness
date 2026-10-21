@@ -148,7 +148,12 @@ def load_pipeline(cls: Any, path: str | Path, dtype: torch.dtype, **kwargs: Any)
 
 # Families whose diffusers pipeline is called end to end (prompt → images/frames) instead of
 # through Sarness' encode / sample / decode nodes.
-NATIVE_PIPELINES = {"qwenimage21": "QwenImage21Pipeline", "ltx2": "LTX2Pipeline"}
+NATIVE_PIPELINES = {
+    "qwenimage21": "QwenImage21Pipeline", "qwenimage": "QwenImagePipeline", "qwenimage-edit": "QwenImageEditPlusPipeline",
+    "zimage": "ZImagePipeline", "flux2klein": "Flux2KleinPipeline", "flux2": "Flux2Pipeline",
+    "ltx2": "LTX2Pipeline", "hunyuanvideo15": "HunyuanVideo15Pipeline",
+    "hunyuanvideo15-i2v": "HunyuanVideo15ImageToVideoPipeline",
+}
 
 
 def _has(path: Path, pattern: str) -> bool:
@@ -428,7 +433,7 @@ class ModelManager:
         return ModelHandle(key, info["id"], "minimaxh3", info, pipe, "gpu")
 
     def _native_pipeline(self, kind: str, info: dict[str, Any], memory_mode: str) -> ModelHandle:
-        """Loads a pipeline that runs end to end (Qwen-Image 2.1, LTX-2) in bf16."""
+        """Loads a pipeline that runs end to end (Qwen-Image, Z-Image, FLUX.2, LTX-2, HunyuanVideo 1.5) in bf16."""
         import diffusers
 
         family = info["family"]
@@ -443,6 +448,8 @@ class ModelManager:
         pipe = load_pipeline(cls, info["path"], dtype)
         pipe.set_progress_bar_config(disable=True)
         pipe._sarness_default_scheduler = pipe.scheduler
+        if family.startswith("hunyuanvideo15"):
+            pipe.vae.enable_tiling()  # its 720p decode otherwise needs tens of GB at once
         self.make_room(est, keep={key})
         mode = self._choose_mode(memory_mode, est, keep={key})
         if mode == "split":

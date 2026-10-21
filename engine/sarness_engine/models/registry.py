@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from ..db import Database, now
-from .catalog import CATALOG, get_entry
+from .catalog import CATALOG, NATIVE_IMAGE_CAPS, get_entry
 from .downloads import MARKER_PREFIX, pending_files
 
 log = logging.getLogger("sarness.registry")
@@ -38,11 +38,28 @@ PIPELINE_FAMILIES = {
     "LTX2Pipeline": ("video", "ltx2"),
     "LTX2ImageToVideoPipeline": ("video", "ltx2"),
     "MiniMaxH3ModularPipeline": ("video", "minimaxh3"),
+    "QwenImagePipeline": ("image", "qwenimage"),
+    "QwenImageEditPlusPipeline": ("image", "qwenimage-edit"),
+    "ZImagePipeline": ("image", "zimage"),
+    "Flux2KleinPipeline": ("image", "flux2klein"),
+    "Flux2Pipeline": ("image", "flux2"),
+    "HunyuanVideo15Pipeline": ("video", "hunyuanvideo15"),
+    "HunyuanVideo15ImageToVideoPipeline": ("video", "hunyuanvideo15-i2v"),
 }
 UNSUPPORTED_PIPELINES = {
     "FluxPipeline", "StableDiffusion3Pipeline", "LTXPipeline", "HunyuanVideoPipeline", "CogVideoXPipeline",
-    "QwenImagePipeline", "ZImagePipeline", "PixArtSigmaPipeline", "SanaPipeline",
+    "PixArtSigmaPipeline", "SanaPipeline",
 }
+
+
+def is_projector(name: str) -> bool:
+    """Vision projector GGUFs: "mmproj-F16.gguf", or "<model>.mmproj-f16.gguf" (mradermacher's naming)."""
+    return name.startswith("mmproj") or ".mmproj" in name
+
+
+def is_companion(name: str) -> bool:
+    """GGUFs that accompany a model rather than being one: projectors and MTP heads."""
+    return is_projector(name) or name.startswith("mtp-")
 
 
 def repo_slug(repo: str) -> str:
@@ -180,19 +197,19 @@ class ModelRegistry:
         if cat == "llm":
             pending = {p for m in d.rglob(MARKER_PREFIX + "*") for p in pending_files(m.parent)}
             for f in sorted(d.rglob("*.gguf")):
-                if f.name.startswith("mmproj") or f.name.startswith("mtp-") or ".partial" in f.name:
+                if is_companion(f.name) or ".partial" in f.name:
                     continue
                 split = f.name.split("-00001-of-")[0] + "-000" if "-00001-of-" in f.name else None
                 if f in pending or split and any(p.parent == f.parent and p.name.startswith(split) for p in pending):
                     continue  # still downloading (a split GGUF counts until every shard is in)
                 if re.search(r"-0000[2-9]-of-", f.name):
                     continue  # later shards of split GGUFs
-                mmproj = _companion(f, d, "mmproj*.gguf")
+                mmproj = _companion(f, d, "mmproj*.gguf") or _companion(f, d, "*.mmproj*.gguf")
                 entry, quant = self._match_gguf(f)
                 meta = gguf_metadata(f)
                 meta["mmproj"] = str(mmproj[0]) if mmproj else None
                 # Multi-token-prediction head for speculative decoding (llama.cpp --spec-type draft-mtp).
-                mtp = _companion(f, d, "mtp-*.gguf")
+                mtp = _companion(f, d, "mtp-*.gguf") or sorted((f.parent / "MTP").glob("mtp-*.gguf"))
                 meta["mtp"] = str(mtp[0]) if mtp else None
                 mid = f"{entry['id']}@{quant}" if entry else "gguf:" + slugify(f.stem)
                 out.append({
@@ -213,7 +230,12 @@ class ModelRegistry:
         return out
 
     def _match_gguf(self, f: Path) -> tuple[dict[str, Any] | None, str | None]:
+        # Fine-tunes often keep the base model's file names (an abliterated Flash Next ships
+        # "Qwen3.8-Flash-Next-UD-IQ4_XS-…"), so a file inside a repo folder only matches that repo's entry.
+        repo_dirs = {p.name for p in f.parents if "--" in p.name}
         for e in CATALOG:
+            if repo_dirs and repo_slug(e.get("repo") or "") not in repo_dirs:
+                continue
             for q in e.get("quantizations") or []:
                 if f.name == Path(q["files"][0]).name:
                     return e, q["id"]
@@ -329,6 +351,12 @@ class ModelRegistry:
             return {"modes": ["t2v", "i2v"], "negative_prompt": True, "start_frame": True, "end_frame": False, "motion": []}
         if fam == "qwenimage21":
             return {"modes": ["txt2img"], "lora": False, "controlnet": False, "negative_prompt": True}
+        if fam in NATIVE_IMAGE_CAPS:
+            return dict(NATIVE_IMAGE_CAPS[fam])
+        if fam == "hunyuanvideo15":
+            return {"modes": ["t2v"], "negative_prompt": True, "start_frame": False, "end_frame": False, "motion": []}
+        if fam == "hunyuanvideo15-i2v":
+            return {"modes": ["i2v"], "negative_prompt": True, "start_frame": True, "end_frame": False, "motion": []}
         if fam == "ltx2":
             return {"modes": ["t2v", "i2v"], "negative_prompt": True, "start_frame": True, "end_frame": False,
                     "motion": [], "audio": True}
@@ -355,6 +383,13 @@ _FAMILY_DEFAULTS = {
     "qwenimage21": {"steps": 40, "guidance": 4.0, "width": 1024, "height": 1024},
     "ltx2": {"steps": 30, "guidance": 3.0, "width": 768, "height": 512, "frames": 121, "fps": 24},
     "minimaxh3": {"steps": 30, "guidance": 1.0, "width": 1344, "height": 768, "frames": 124, "fps": 24},
+    "qwenimage": {"steps": 50, "guidance": 4.0, "width": 1328, "height": 1328},
+    "qwenimage-edit": {"steps": 40, "guidance": 4.0, "width": 1024, "height": 1024},
+    "zimage": {"steps": 30, "guidance": 4.0, "width": 1024, "height": 1024},
+    "flux2klein": {"steps": 4, "guidance": 1.0, "width": 1024, "height": 1024},
+    "flux2": {"steps": 28, "guidance": 4.0, "width": 1024, "height": 1024},
+    "hunyuanvideo15": {"steps": 50, "guidance": 6.0, "width": 1280, "height": 720, "frames": 121, "fps": 24},
+    "hunyuanvideo15-i2v": {"steps": 50, "guidance": 6.0, "width": 1280, "height": 720, "frames": 121, "fps": 24},
 }
 _FAMILY_LIMITS = {
     "sdxl": {"steps": [1, 100], "guidance": [0, 20], "min_side": 512, "max_side": 1536, "multiple": 8},
@@ -364,6 +399,13 @@ _FAMILY_LIMITS = {
     "qwenimage21": {"steps": [4, 80], "guidance": [1, 10], "min_side": 512, "max_side": 2048, "multiple": 16},
     "ltx2": {"steps": [4, 60], "frames": [9, 257], "frame_step": 8, "multiple": 32},
     "minimaxh3": {"steps": [8, 60], "frames": [124, 345], "frame_step": 1, "multiple": 32},
+    "qwenimage": {"steps": [4, 80], "guidance": [1, 10], "min_side": 512, "max_side": 2048, "multiple": 16},
+    "qwenimage-edit": {"steps": [4, 80], "guidance": [1, 10], "min_side": 512, "max_side": 2048, "multiple": 16},
+    "zimage": {"steps": [4, 80], "guidance": [0, 10], "min_side": 512, "max_side": 2048, "multiple": 16},
+    "flux2klein": {"steps": [1, 50], "guidance": [0, 10], "min_side": 256, "max_side": 2048, "multiple": 16},
+    "flux2": {"steps": [4, 80], "guidance": [1, 10], "min_side": 256, "max_side": 2048, "multiple": 16},
+    "hunyuanvideo15": {"steps": [4, 60], "frames": [5, 241], "frame_step": 4, "multiple": 16},
+    "hunyuanvideo15-i2v": {"steps": [4, 60], "frames": [5, 241], "frame_step": 4, "multiple": 16},
 }
 
 

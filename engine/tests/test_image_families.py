@@ -1,0 +1,194 @@
+"""End-to-end image families (Qwen-Image-2512 / Edit-2511, Z-Image, FLUX.2): modes, guidance styles and the
+simple-mode graph, with fake pipelines in place of the diffusers ones."""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import pytest
+
+
+class _Ctx:
+    def __init__(self):
+        self.notes, self.steps = {}, []
+
+    def annotate(self, **kw):
+        self.notes.update(kw)
+
+    def progress(self, step, total, text=None, preview=None):
+        self.steps.append((step, total))
+
+
+class _Pipe:
+    def __init__(self, name="base"):
+        self.name, self.calls = name, []
+
+    def __call__(self, **kw):
+        from PIL import Image
+
+        self.calls.append(kw)
+        kw["callback_on_step_end"](self, 0, 0, {})
+        size = (kw["width"], kw["height"]) if kw.get("width") else kw["image"].size
+        return SimpleNamespace(images=[Image.new("RGB", size)] * kw.get("num_images_per_prompt", 1))
+
+
+def _setup(monkeypatch, family, caps=None):
+    pytest.importorskip("torch")
+    from sarness_engine.runtime.models import ModelHandle
+    from sarness_engine.workflow.nodes import diffusion as d
+
+    variants: dict[str | None, _Pipe] = {None: _Pipe()}
+
+    def native_pipe(handle, cls_name):
+        return variants.setdefault(cls_name, _Pipe(cls_name))
+
+    monkeypatch.setattr(d, "_native_pipe", native_pipe)
+    info = {"name": family, "limits": {"multiple": 16}, "capabilities": caps or {}}
+    h = ModelHandle(f"image:{family}", family, family, info, variants[None], "gpu")
+    return d, h, variants
+
+
+def _cond(d, h, ctx, prompt="a red bicycle", negative="", style="none"):
+    return d.encode_prompt(ctx, {"model": h}, {"prompt": prompt, "negative_prompt": negative, "style": style,
+                                               "clip_skip": 0})["conditioning"]
+
+
+PARAMS = {"seed": 3, "steps": 20, "guidance": 4.0, "denoise": 0.6, "guidance_rescale": 0.0}
+
+
+def _img(w=640, h=480):
+    from PIL import Image
+
+    return Image.new("RGB", (w, h), "white")
+
+
+def test_qwen_image_2512_runs_txt2img_img2img_and_inpaint(monkeypatch):
+    d, h, variants = _setup(monkeypatch, "qwenimage")
+    ctx = _Ctx()
+    cond = _cond(d, h, ctx)
+    d.image_sampler(ctx, {"model": h, "conditioning": cond,
+                          "latent": {"samples": None, "width": 1328, "height": 1328, "batch": 1}}, dict(PARAMS))
+    call = variants[None].calls[-1]
+    assert call["true_cfg_scale"] == 4.0 and call["negative_prompt"] == " " and "guidance_scale" not in call
+
+    enc = d.vae_encode(ctx, {"model": h, "image": [_img()]}, {"sample": False, "seed": 0})["latent"]
+    assert enc["samples"] is None and enc["source"][0].size == (640, 480)
+    d.image_sampler(ctx, {"model": h, "conditioning": cond, "latent": enc}, dict(PARAMS))
+    call = variants["QwenImageImg2ImgPipeline"].calls[-1]
+    assert call["strength"] == 0.6 and call["image"].size == (640, 480)
+    assert ctx.notes["mode"] == "img2img" and ctx.steps[-1][1] == 12, "progress counts only the denoised steps"
+
+    from PIL import Image
+
+    mask = [Image.new("L", (320, 240), 255)]
+    d.image_sampler(ctx, {"model": h, "conditioning": cond, "latent": enc, "mask": mask}, dict(PARAMS))
+    call = variants["QwenImageInpaintPipeline"].calls[-1]
+    assert call["mask_image"].size == (640, 480), "mask resized to the source"
+    assert ctx.notes["mode"] == "inpaint"
+
+
+def test_edit_model_takes_the_reference_and_extra_references(monkeypatch):
+    from sarness_engine.workflow.types import WorkflowError
+
+    d, h, variants = _setup(monkeypatch, "qwenimage-edit", {"references": 3})
+    ctx = _Ctx()
+    cond = _cond(d, h, ctx, "put the cat from image 2 on the sofa")
+    enc = d.vae_encode(ctx, {"model": h, "image": [_img()]}, {"sample": False, "seed": 0})["latent"]
+    d.image_sampler(ctx, {"model": h, "conditioning": cond, "latent": enc, "reference_2": [_img(300, 300)],
+                          "reference_3": [_img(200, 200)]}, dict(PARAMS))
+    call = variants[None].calls[-1]
+    assert [im.size for im in call["image"]] == [(640, 480), (300, 300), (200, 200)]
+    assert "strength" not in call and ctx.notes["mode"] == "edit" and ctx.notes["references"] == 3
+    with pytest.raises(WorkflowError, match="does not support text-to-image"):
+        d.image_sampler(ctx, {"model": h, "conditioning": cond,
+                              "latent": {"samples": None, "width": 512, "height": 512, "batch": 1}}, dict(PARAMS))
+
+
+def test_flux2_klein_uses_embedded_guidance_and_no_negative_prompt(monkeypatch):
+    d, h, variants = _setup(monkeypatch, "flux2klein", {"references": 4})
+    ctx = _Ctx()
+    cond = _cond(d, h, ctx, negative="blurry")
+    d.image_sampler(ctx, {"model": h, "conditioning": cond, "reference_2": [_img()],
+                          "latent": {"samples": None, "width": 1024, "height": 1024, "batch": 1}},
+                    {**PARAMS, "guidance": 1.0, "steps": 4})
+    call = variants[None].calls[-1]
+    assert call["guidance_scale"] == 1.0 and "negative_prompt" not in call and "true_cfg_scale" not in call
+    assert len(call["image"]) == 1, "extra references guide a new image"
+    enc = d.vae_encode(ctx, {"model": h, "image": [_img()]}, {"sample": False, "seed": 0})["latent"]
+    d.image_sampler(ctx, {"model": h, "conditioning": cond, "latent": enc}, dict(PARAMS))
+    assert ctx.notes["mode"] == "edit", "a reference image is edited, not used as an img2img start"
+
+
+def test_z_image_turbo_runs_without_cfg_and_base_with_negative(monkeypatch):
+    d, h, variants = _setup(monkeypatch, "zimage")
+    ctx = _Ctx()
+    cond = _cond(d, h, ctx, negative="cartoon")
+    lat = {"samples": None, "width": 1024, "height": 1024, "batch": 2}
+    d.image_sampler(ctx, {"model": h, "conditioning": cond, "latent": lat}, {**PARAMS, "guidance": 0.0, "steps": 9})
+    call = variants[None].calls[-1]
+    assert call["guidance_scale"] == 0.0 and "negative_prompt" not in call and call["num_images_per_prompt"] == 2
+    d.image_sampler(ctx, {"model": h, "conditioning": cond, "latent": lat}, dict(PARAMS))
+    assert variants[None].calls[-1]["negative_prompt"] == "cartoon"
+
+
+def test_iphone_style_wraps_the_prompt_for_every_family(monkeypatch):
+    from sarness_engine.workflow.styles import STYLES, apply_style
+
+    d, h, variants = _setup(monkeypatch, "qwenimage")
+    ctx = _Ctx()
+    cond = _cond(d, h, ctx, "a woman laughing at a kitchen table", "dark", style="iphone")
+    assert "a woman laughing at a kitchen table" in cond["prompt"] and "iPhone" in cond["prompt"]
+    assert cond["negative_prompt"].startswith("dark, ") and "plastic skin" in cond["negative_prompt"]
+    assert ctx.notes["prompt"] == "a woman laughing at a kitchen table", "history keeps what the user typed"
+    assert ctx.notes["style"] == "iphone"
+    assert apply_style("none", "x", "y") == ("x", "y") and apply_style("unknown", "x", "") == ("x", "")
+    assert set(STYLES) >= {"iphone"}
+
+
+def test_simple_mode_round_trips_style_and_extra_references():
+    from sarness_engine.workflow.templates import image_workflow, to_simple
+
+    simple = {"model": "qwen-image-edit-2511", "prompt": "swap the jacket", "style": "iphone",
+              "reference_image": "f_ref", "extra_references": ["f_2", "f_3"], "steps": 40, "guidance": 4.0}
+    g = image_workflow(simple)
+    targets = {e["target_input"] for e in g["edges"] if e["target"] == "sampler"}
+    assert {"reference_2", "reference_3"} <= targets
+    back = to_simple(g)
+    assert back["representable"], back["reasons"]
+    assert back["simple"]["style"] == "iphone"
+    assert back["simple"]["reference_image"] == "f_ref" and back["simple"]["extra_references"] == ["f_2", "f_3"]
+    plain = to_simple(image_workflow({"model": "z-image-turbo", "prompt": "x"}))
+    assert plain["representable"] and plain["simple"]["extra_references"] == [] and plain["simple"]["style"] == "none"
+
+
+def test_hunyuan_video_sets_guidance_on_its_guider_and_crops_the_start_frame():
+    pytest.importorskip("torch")
+    import numpy as np
+
+    from sarness_engine.runtime.models import ModelHandle
+    from sarness_engine.workflow.nodes import video as v
+
+    class Pipe:
+        guider = SimpleNamespace(guidance_scale=6.0)
+
+        def __call__(self, **kw):
+            self.kw = kw
+            kw["callback_on_step_end"](self, 0, 0, {})
+            w, h = kw["image"].size if "image" in kw else (kw["width"], kw["height"])
+            return SimpleNamespace(frames=[np.zeros((kw["num_frames"], h, w, 3), dtype=np.float32)])
+
+    for family, start in (("hunyuanvideo15", None), ("hunyuanvideo15-i2v", [_img(1920, 1080)])):
+        pipe = Pipe()
+        caps = {"modes": ["i2v"] if start else ["t2v"], "start_frame": bool(start)}
+        h = ModelHandle("video:h", family, family, {"name": "HY", "capabilities": caps,
+                                                    "limits": {"multiple": 16, "frame_step": 4}}, pipe, "gpu")
+        ctx = _Ctx()
+        cond = v.encode_video_prompt(ctx, {"model": h}, {"prompt": "a dog runs", "negative_prompt": "blur"})["conditioning"]
+        assert cond == {"family": family, "prompt": "a dog runs", "negative_prompt": "blur"}
+        inputs = {"model": h, "conditioning": cond, **({"start_image": start} if start else {})}
+        out = v.video_sampler(ctx, inputs, {"width": 848, "height": 480, "frames": 122, "fps": 24, "seed": 1, "steps": 30,
+                                            "guidance": 5.0, "flow_shift": 3.0})["video"]
+        assert pipe.guider.guidance_scale == 5.0
+        assert pipe.kw["num_frames"] == 121, "snapped to 4k+1"
+        assert len(out["frames"]) == 121 and out["frames"][0].size == (848, 480)
+        assert ("height" in pipe.kw) == (start is None), "image-to-video takes its size from the start frame"

@@ -17,7 +17,7 @@ IMAGE_DEFAULTS: dict[str, Any] = {
     "model": "", "prompt": "", "negative_prompt": "", "width": 1024, "height": 1024, "batch_size": 1,
     "steps": 30, "guidance": 6.0, "seed": -1, "scheduler": "default", "denoise": 0.65,
     "reference_image": None, "mask_image": None, "loras": [], "vae": None, "memory_mode": "auto",
-    "upscale": None, "format": "png", "clip_skip": 0,
+    "upscale": None, "format": "png", "clip_skip": 0, "style": "none", "extra_references": [],
 }
 
 VIDEO_DEFAULTS: dict[str, Any] = {
@@ -55,7 +55,7 @@ def image_workflow(simple: dict[str, Any]) -> dict[str, Any]:
         b.link(model_out, "model", nid, "model")
         model_out = nid
     b.add("prompt", "prompt.encode", {"prompt": p["prompt"], "negative_prompt": p["negative_prompt"],
-                                      "clip_skip": int(p["clip_skip"])}, 1, 0)
+                                      "style": p["style"] or "none", "clip_skip": int(p["clip_skip"])}, 1, 0)
     b.link(model_out, "model", "prompt", "model")
 
     sampler_params = {"seed": int(p["seed"]), "steps": int(p["steps"]), "guidance": float(p["guidance"]),
@@ -77,6 +77,10 @@ def image_workflow(simple: dict[str, Any]) -> dict[str, Any]:
         if p["mask_image"]:
             b.add("mask", "mask.load", {"file": p["mask_image"], "channel": "luminance"}, 0, 3.2)
             b.link("mask", "mask", "sampler", "mask")
+        # Extra references for multi-image editing models (the reference image above is the first).
+        for i, ref in enumerate((p["extra_references"] or [])[:2]):
+            nid = b.add(f"ref_{i + 2}", "image.load", {"file": ref}, 1, 3.2 + i, f"Reference {i + 2}")
+            b.link(nid, "image", "sampler", f"reference_{i + 2}")
     else:
         b.add("latent", "latent.empty", {"width": int(p["width"]), "height": int(p["height"]),
                                          "batch_size": int(p["batch_size"])}, 1, 1.25)
@@ -189,7 +193,6 @@ def _extract_image(g) -> dict[str, Any]:
     s = _one(g, "sampler.image")
     out = _one(g, "output.save_image")
     lat = _one(g, "latent.empty", required=False)
-    ref = _one(g, "image.load", required=False)
     rs = _one(g, "image.resize", required=False)
     mask = _one(g, "mask.load", required=False)
     sch = _one(g, "scheduler.select", required=False)
@@ -215,6 +218,20 @@ def _extract_image(g) -> dict[str, Any]:
         loras.append({"id": lp.get("lora"), "strength": lp.get("strength", 1.0)})
     if len(seen) != len(_find(g, "loader.lora")):
         raise _NotSimple("LoRAs are not chained in a single line")
+    # The reference image feeds the resize node; extra references (editing models) feed the sampler directly.
+    loads = {n["id"]: n.get("params") or {} for n in g["nodes"] if n["type"] == "image.load"}
+    ref, extra, used = None, [], set()
+    for e in edges:
+        if e["source"] in loads and nodes.get(e["target"], {}).get("type") == "image.resize":
+            ref = loads[e["source"]]
+            used.add(e["source"])
+    for i in (2, 3):
+        src = next((e["source"] for e in edges if e["source"] in loads and e["target_input"] == f"reference_{i}"), None)
+        if src:
+            extra.append(loads[src].get("file"))
+            used.add(src)
+    if set(loads) - used:
+        raise _NotSimple("loads images that simple mode cannot place")
     width = (rs or lat or {}).get("width", 1024)
     height = (rs or lat or {}).get("height", 1024)
     if rs and (rs.get("mode", "fill") != "fill" or rs.get("multiple_of", 8) != 8):
@@ -222,13 +239,13 @@ def _extract_image(g) -> dict[str, Any]:
     return {
         "model": m.get("model"), "vae": m.get("vae") or None, "memory_mode": m.get("memory_mode", "auto"),
         "prompt": pr.get("prompt", ""), "negative_prompt": pr.get("negative_prompt", ""),
-        "clip_skip": pr.get("clip_skip", 0),
+        "style": pr.get("style", "none"), "clip_skip": pr.get("clip_skip", 0),
         "width": width, "height": height, "batch_size": (lat or {}).get("batch_size", 1),
         "steps": s.get("steps"), "guidance": s.get("guidance"), "seed": s.get("seed", -1),
         "denoise": s.get("denoise", 1.0) if ref else IMAGE_DEFAULTS["denoise"],
         "scheduler": (sch or {}).get("name", "default"),
         "reference_image": (ref or {}).get("file"), "mask_image": (mask or {}).get("file"),
-        "loras": loras,
+        "loras": loras, "extra_references": extra,
         "upscale": {"model": up_l.get("model"), "factor": (up or {}).get("output_scale", 0)} if up_l else None,
         "format": out.get("format", "png"),
     }

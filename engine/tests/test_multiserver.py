@@ -244,6 +244,40 @@ def test_registry_new_families_and_nested_mtp(tmp_path):
     assert not any("00002-of" in i for i in items), "later shards are not listed as models"
 
 
+def test_registry_tells_fine_tunes_with_the_base_file_names_apart(tmp_path):
+    from sarness_engine.models.registry import ModelRegistry
+
+    cfg = load_config(tmp_path / "data")
+    cfg.ensure_dirs()
+    llm = cfg.models_dir / "llm"
+    shard = "Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf"
+    _gguf(llm / "unsloth--Qwen3.8-Flash-Next-GGUF" / "UD-IQ4_XS" / shard)
+    _gguf(llm / "huihui-ai--Huihui-Qwen3.8-Flash-Next-abliterated-v2-GGUF" / "unsloth-UD-IQ4_XS" / shard)
+    # mradermacher names projectors "<model>.mmproj-f16.gguf"; unsloth keeps the MTP head in MTP/.
+    mr = llm / "mradermacher--Huihui-Qwen3.5-27B-abliterated-GGUF"
+    _gguf(mr / "Huihui-Qwen3.5-27B-abliterated.Q6_K.gguf")
+    (mr / "Huihui-Qwen3.5-27B-abliterated.mmproj-f16.gguf").write_bytes(b"GGUF")
+    q = llm / "unsloth--Qwen3.8-27B-GGUF"
+    _gguf(q / "Qwen3.8-27B-UD-Q6_K.gguf")
+    (q / "mmproj-F16.gguf").write_bytes(b"GGUF")
+    (q / "MTP").mkdir()
+    (q / "MTP" / "mtp-Qwen3.8-27B-Q4_0.gguf").write_bytes(b"GGUF")
+    img = cfg.models_dir / "image" / "Tongyi-MAI--Z-Image-Turbo"
+    img.mkdir(parents=True)
+    (img / "model_index.json").write_text('{"_class_name": "ZImagePipeline"}')
+    items = {i["id"]: i for i in ModelRegistry(Database(cfg.db_path), cfg.models_dir).scan()}
+    assert "qwen3.8-flash-next@UD-IQ4_XS" in items
+    abl = items["huihui-qwen3.8-flash-next-abliterated@UD-IQ4_XS"]
+    assert "huihui" in abl["path"] and abl["llama_args"] == ["-lzm", "on"]
+    q35 = items["huihui-qwen3.5-27b-abliterated@Q6_K"]
+    assert q35["meta"]["mmproj"].endswith(".mmproj-f16.gguf") and q35["capabilities"]["vision"]
+    assert not any("mmproj" in i for i in items), "projectors are never listed as models"
+    q38 = items["qwen3.8-27b@UD-Q6_K"]
+    assert q38["meta"]["mtp"].endswith("MTP/mtp-Qwen3.8-27B-Q4_0.gguf")
+    z = items["z-image-turbo"]
+    assert z["family"] == "zimage" and z["supported"] and z["capabilities"]["negative_prompt"] is False
+
+
 class _Ctx:
     def __init__(self):
         self.notes, self.steps = {}, []
@@ -287,8 +321,8 @@ def test_native_image_family_runs_end_to_end():
     assert call["true_cfg_scale"] == 4.0 and call["negative_prompt"] == " "
     imgs = d.vae_decode(ctx, {"model": h, "latent": out}, {"tiled": False})["image"]
     assert len(imgs) == 2 and imgs[0].size == (992, 752)
-    with pytest.raises(WorkflowError, match="text-to-image only"):
-        d.image_sampler(ctx, {"model": h, "conditioning": cond, "latent": {**lat, "samples": object()}}, params)
+    with pytest.raises(WorkflowError, match="does not support image-to-image"):
+        d.image_sampler(ctx, {"model": h, "conditioning": cond, "latent": {**lat, "source": [object()]}}, params)
     params["guidance"] = 1.0
     d.image_sampler(ctx, {"model": h, "conditioning": cond, "latent": lat}, params)
     assert "true_cfg_scale" not in pipe.calls[-1]

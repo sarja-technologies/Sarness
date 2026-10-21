@@ -11,11 +11,27 @@ import io
 from typing import Any
 
 from ..registry import node
+from ..styles import apply_style, style_options
 from ..types import (CONDITIONING, CONTROL, CONTROLNET, FLOAT, IMAGE, INT, LATENT, MASK, MODEL, SCHEDULER, STRING,
                      VAE, Param, Socket, WorkflowError)
 
-IMAGE_FAMILIES = ["sdxl", "sd15", "qwenimage21", "gateway"]
-NATIVE_IMAGE_FAMILIES = {"qwenimage21"}
+IMAGE_FAMILIES = ["sdxl", "sd15", "qwenimage21", "qwenimage", "qwenimage-edit", "zimage", "flux2klein", "flux2",
+                  "gateway"]
+# Families whose diffusers pipeline runs end to end, and the pipeline class for each mode (None: the loaded one).
+# "edit" passes the reference image(s) as conditioning; img2img starts from the reference and keeps its layout.
+NATIVE_MODES: dict[str, dict[str, str | None]] = {
+    "qwenimage21": {"txt2img": None},
+    "qwenimage": {"txt2img": None, "img2img": "QwenImageImg2ImgPipeline", "inpaint": "QwenImageInpaintPipeline"},
+    "qwenimage-edit": {"edit": None},
+    "zimage": {"txt2img": None, "img2img": "ZImageImg2ImgPipeline", "inpaint": "ZImageInpaintPipeline"},
+    "flux2klein": {"txt2img": None, "edit": None, "inpaint": "Flux2KleinInpaintPipeline"},
+    "flux2": {"txt2img": None, "edit": None},
+}
+NATIVE_IMAGE_FAMILIES = set(NATIVE_MODES)
+# How each native family takes guidance: Qwen-Image runs true CFG with a negative prompt, Z-Image classic CFG
+# (with a negative prompt), FLUX.2 an embedded guidance scale and no negative prompt.
+_TRUE_CFG = {"qwenimage21", "qwenimage", "qwenimage-edit"}
+_NO_NEGATIVE = {"flux2klein", "flux2"}
 MEMORY_MODES = [
     {"value": "auto", "label": "Auto"},
     {"value": "gpu", "label": "GPU (fastest)"},
@@ -93,16 +109,20 @@ def load_controlnet(ctx, inputs, params):
       inputs=[Socket("model", MODEL)], outputs=[Socket("conditioning", CONDITIONING)],
       params=[Param("prompt", "text", "", socket=True),
               Param("negative_prompt", "text", "", socket=True),
+              Param("style", "enum", "none", options=style_options(),
+                    description="Wraps the prompt with a reusable look, e.g. an ordinary iPhone photo."),
               Param("clip_skip", "int", 0, min=0, max=4, advanced=True)])
 def encode_prompt(ctx, inputs, params):
     import torch
 
     handle = inputs["model"]
     pipe = handle.pipe
+    style = params.get("style") or "none"
+    prompt, negative = apply_style(style, params["prompt"], params["negative_prompt"] or "")
+    ctx.annotate(prompt=params["prompt"], negative_prompt=params["negative_prompt"],
+                 style=style if style != "none" else None)
     if handle.family in NATIVE_IMAGE_FAMILIES:
-        ctx.annotate(prompt=params["prompt"], negative_prompt=params["negative_prompt"])
-        return {"conditioning": {"family": handle.family, "prompt": params["prompt"],
-                                 "negative_prompt": params["negative_prompt"]}}
+        return {"conditioning": {"family": handle.family, "prompt": prompt, "negative_prompt": negative}}
     from ...runtime.models import apply_loras, device
 
     apply_loras(handle)  # LoRAs may patch the text encoders
@@ -110,16 +130,15 @@ def encode_prompt(ctx, inputs, params):
     with torch.inference_mode():
         if handle.family == "sdxl":
             pe, ne, pp, npool = pipe.encode_prompt(
-                prompt=params["prompt"], prompt_2=None, device=dev, num_images_per_prompt=1,
-                do_classifier_free_guidance=True, negative_prompt=params["negative_prompt"] or None,
+                prompt=prompt, prompt_2=None, device=dev, num_images_per_prompt=1,
+                do_classifier_free_guidance=True, negative_prompt=negative or None,
                 clip_skip=params["clip_skip"] or None)
             cond = {"family": "sdxl", "prompt_embeds": pe, "negative_prompt_embeds": ne,
                     "pooled_prompt_embeds": pp, "negative_pooled_prompt_embeds": npool}
         else:
-            pe, ne = pipe.encode_prompt(params["prompt"], dev, 1, True, params["negative_prompt"] or None,
+            pe, ne = pipe.encode_prompt(prompt, dev, 1, True, negative or None,
                                         clip_skip=params["clip_skip"] or None)
             cond = {"family": handle.family, "prompt_embeds": pe, "negative_prompt_embeds": ne}
-    ctx.annotate(prompt=params["prompt"], negative_prompt=params["negative_prompt"])
     return {"conditioning": cond}
 
 
@@ -218,7 +237,9 @@ def _latent_preview(lat, rgb, bias) -> str:
       description="Denoises latents with the model. Connect a mask for inpainting, or encoded image latents for image-to-image.",
       inputs=[Socket("model", MODEL), Socket("conditioning", CONDITIONING), Socket("latent", LATENT),
               Socket("scheduler", SCHEDULER, optional=True), Socket("control", CONTROL, optional=True),
-              Socket("mask", MASK, "Inpaint mask", optional=True)],
+              Socket("mask", MASK, "Inpaint mask", optional=True),
+              Socket("reference_2", IMAGE, "Extra reference", optional=True),
+              Socket("reference_3", IMAGE, "Extra reference", optional=True)],
       outputs=[Socket("latent", LATENT)],
       params=[Param("seed", "seed", -1, min=-1, max=2**32 - 1, socket=True),
               Param("steps", "int", 30, min=1, max=150, socket=True),
@@ -238,8 +259,11 @@ def image_sampler(ctx, inputs, params):
     mask = inputs.get("mask")
     if cond.get("family") != handle.family:
         raise WorkflowError("conditioning was encoded with a different model family")
+    refs = [im for k in ("reference_2", "reference_3") for im in (inputs.get(k) or [])]
     if handle.family in NATIVE_IMAGE_FAMILIES:
-        return _native_sample(ctx, handle, cond, lat, control, mask, params)
+        return _native_sample(ctx, handle, cond, lat, control, mask, refs, params)
+    if refs:
+        raise WorkflowError(f"{handle.info.get('name') or handle.model_id} does not take extra reference images")
 
     base = handle.pipe
     apply_loras(handle)
@@ -302,33 +326,99 @@ def image_sampler(ctx, inputs, params):
     return {"latent": {"samples": samples, "width": w, "height": h, "batch": samples.shape[0], "source": lat.get("source")}}
 
 
-def _native_sample(ctx, handle, cond, lat, control, mask, params):
+def _native_pipe(handle, cls_name: str | None):
+    """The loaded pipeline, or a task variant (image-to-image, inpainting) sharing its components."""
+    import diffusers
+
+    base = handle.pipe
+    if cls_name is None:
+        return base
+    cache = base.__dict__.setdefault("_sarness_denoise", {})
+    if cls_name not in cache:
+        sub = getattr(diffusers, cls_name).from_pipe(base)
+        sub.set_progress_bar_config(disable=True)
+        cache[cls_name] = sub
+    return cache[cls_name]
+
+
+def _native_sample(ctx, handle, cond, lat, control, mask, refs, params):
     import torch
 
+    from ...runtime.models import apply_loras
+
     name = handle.info.get("name") or handle.model_id
-    if mask is not None or control is not None or lat.get("samples") is not None:
-        raise WorkflowError(f"{name} supports text-to-image only in Sarness (no image-to-image, inpainting or ControlNet)")
+    family = handle.family
+    table = NATIVE_MODES[family]
+    if control is not None:
+        raise WorkflowError(f"{name} does not support ControlNet in Sarness")
+    if lat.get("samples") is not None:
+        raise WorkflowError(f"{name} starts from images, not latents: connect VAE Encode directly to the sampler")
+    source = lat.get("source")
+    if mask is not None:
+        if not source:
+            raise WorkflowError("inpainting needs the source image (connect it through VAE Encode)")
+        mode = "inpaint"
+    elif source:
+        mode = "edit" if "edit" in table else "img2img"
+    else:
+        mode = "txt2img"
+    if mode not in table:
+        what = {"img2img": "image-to-image", "inpaint": "inpainting", "edit": "reference editing",
+                "txt2img": "text-to-image without a reference image"}[mode]
+        raise WorkflowError(f"{name} does not support {what}")
+    if refs and mode not in ("edit", "inpaint") and "edit" not in table:
+        raise WorkflowError(f"{name} does not take extra reference images")
+
     mult = int((handle.info.get("limits") or {}).get("multiple") or 16)
     w, h = max(mult, lat["width"] // mult * mult), max(mult, lat["height"] // mult * mult)
     steps, guidance, seed = int(params["steps"]), float(params["guidance"]), int(params["seed"])
+    denoise = float(params["denoise"])
     batch = int(lat.get("batch") or 1)
 
     def cb(pipe, step, timestep, kwargs):
-        ctx.progress(step + 1, steps, f"Step {step + 1}/{steps}")
+        ctx.progress(step + 1, total, f"Step {step + 1}/{total}")
         return kwargs
 
+    kwargs: dict[str, Any] = dict(prompt=cond["prompt"], height=h, width=w, num_inference_steps=steps,
+                                  generator=torch.Generator(device="cpu").manual_seed(seed), output_type="pil",
+                                  callback_on_step_end=cb)
     negative = cond.get("negative_prompt") or ""
-    kwargs: dict[str, Any] = dict(
-        prompt=cond["prompt"], height=h, width=w, num_inference_steps=steps, num_images_per_prompt=batch,
-        generator=torch.Generator(device="cpu").manual_seed(seed), output_type="pil", callback_on_step_end=cb)
-    if guidance > 1:
-        # True CFG only engages with a negative prompt; a blank one is the model card's default.
-        kwargs.update(true_cfg_scale=guidance, negative_prompt=negative or " ")
-    ctx.progress(0, steps, "Sampling")
+    if family in _TRUE_CFG:
+        if guidance > 1:
+            # True CFG only engages with a negative prompt; a blank one is the model card's default.
+            kwargs.update(true_cfg_scale=guidance, negative_prompt=negative or " ")
+    else:
+        kwargs["guidance_scale"] = guidance
+        if family not in _NO_NEGATIVE and guidance > 1 and negative:
+            kwargs["negative_prompt"] = negative
+
+    total = steps
+    if mode == "img2img":
+        kwargs.update(image=source[0], strength=denoise)
+        total = max(1, int(steps * denoise))
+    elif mode == "inpaint":
+        kwargs.update(image=source[0], mask_image=mask[0].resize(source[0].size), strength=denoise)
+        if refs:
+            kwargs["image_reference"] = refs
+        total = max(1, int(steps * denoise))
+    elif mode == "edit":
+        images = [*source, *refs]
+        limit = int((handle.info.get("capabilities") or {}).get("references") or len(images))
+        kwargs["image"] = images[:limit]
+    elif refs:
+        kwargs["image"] = refs  # FLUX.2: references guide a new image
+    if mode in ("txt2img", "edit"):
+        kwargs["num_images_per_prompt"] = batch
+    pipe = _native_pipe(handle, table[mode])
+    apply_loras(handle)
+    ctx.progress(0, total, "Sampling")
     with torch.inference_mode():
-        images = handle.pipe(**kwargs).images
-    ctx.annotate(seed=seed, steps=steps, guidance=guidance, mode="txt2img", width=w, height=h)
-    return {"latent": {"samples": None, "images": images, "width": w, "height": h, "batch": len(images), "source": None}}
+        images = pipe(**kwargs).images
+    ctx.annotate(seed=seed, steps=steps, guidance=guidance, mode=mode, width=w, height=h,
+                 denoise=denoise if mode in ("img2img", "inpaint") else None,
+                 references=(len(kwargs.get("image") or []) if mode == "edit" else len(refs)) or None)
+    return {"latent": {"samples": None, "images": images, "width": images[0].width, "height": images[0].height,
+                       "batch": len(images), "source": None}}
 
 
 def _variant_pipe(base, family: str, mode: str, control):
@@ -433,7 +523,10 @@ def vae_encode(ctx, inputs, params):
 
     handle = inputs["model"]
     if handle.family in NATIVE_IMAGE_FAMILIES:
-        raise WorkflowError(f"{handle.info.get('name') or handle.model_id} does not support image-to-image in Sarness")
+        # End-to-end pipelines encode the image themselves; pass it through for the sampler.
+        images = [im.convert("RGB") for im in inputs["image"]]
+        w, h = images[0].size
+        return {"latent": {"samples": None, "width": w, "height": h, "batch": len(images), "source": images}}
     vae = _vae_for(handle, inputs.get("vae"))
     pipe = handle.pipe
     images = [im.resize((im.width // 8 * 8, im.height // 8 * 8)) for im in inputs["image"]]

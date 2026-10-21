@@ -13,7 +13,8 @@ import httpx
 from .. import hardware
 from .catalog import CATALOG, HARDWARE_PRESETS, default_quant, get_entry
 from .downloads import HF, DownloadError, DownloadManager, list_repo_files
-from .registry import CATEGORIES, PIPELINE_FAMILIES, UNSUPPORTED_PIPELINES, ModelRegistry, repo_slug
+from .registry import (CATEGORIES, PIPELINE_FAMILIES, UNSUPPORTED_PIPELINES, ModelRegistry, is_companion, is_projector,
+                       repo_slug)
 
 log = logging.getLogger("sarness.models")
 
@@ -116,8 +117,8 @@ class ModelService:
         paths = {f["path"] for f in files}
         total = self.gpu_total()
         result: dict[str, Any] = {"repo": repo, "files": files, "total_bytes": sum(f["size"] for f in files)}
-        ggufs = [f for f in files if f["path"].endswith(".gguf") and not f["path"].split("/")[-1].startswith(("mmproj", "mtp-"))]
-        mmproj = [f for f in files if f["path"].split("/")[-1].startswith("mmproj") and f["path"].endswith(".gguf")]
+        ggufs = [f for f in files if f["path"].endswith(".gguf") and not is_companion(f["path"].split("/")[-1])]
+        mmproj = [f for f in files if is_projector(f["path"].split("/")[-1]) and f["path"].endswith(".gguf")]
         if ggufs:
             result["format"] = "gguf"
             result["category"] = "llm"
@@ -187,7 +188,7 @@ class ModelService:
         dest = self.models_dir / category / repo_slug(repo)
         label = name or repo.split("/")[-1]
         if category == "llm":
-            main = next((f for f in files if not f.split("/")[-1].startswith("mmproj")), files[0])
+            main = next((f for f in files if not is_companion(f.split("/")[-1])), files[0])
             model_id = "gguf:" + Path(main).stem.lower()
         else:
             from .registry import slugify
@@ -209,7 +210,7 @@ class ModelService:
             raise PermissionError("models outside the managed models directory are never deleted by Sarness")
         if info["category"] == "llm" and path.is_file():
             path.unlink()
-            remaining = [p for p in path.parent.glob("*.gguf") if not p.name.startswith(("mmproj", "mtp-"))]
+            remaining = [p for p in path.parent.glob("*.gguf") if not is_companion(p.name)]
             if not remaining:
                 shutil.rmtree(path.parent, ignore_errors=True)
         elif path.is_dir():
