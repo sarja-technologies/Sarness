@@ -266,7 +266,6 @@ class ModelManager:
             torch.cuda.ipc_collect()
 
     def make_room(self, need_mb: int, keep: set[str] | None = None) -> None:
-        apply_memory_budget()  # other processes (a chat model) may have grown since the job started
         keep = keep or set()
         for key in list(self._cache):
             if free_vram_mb() >= need_mb + self.headroom_mb:
@@ -279,6 +278,9 @@ class ModelManager:
         are evicted first; otherwise the load itself could exhaust memory."""
         if unified_memory():
             self.make_room(need_mb, keep={key})
+            # Before the load, while nothing transient is held (loading briefly holds extra copies, and a budget
+            # computed then would be far too small); a chat model may have grown since the job started.
+            apply_memory_budget()
 
     def _choose_mode(self, requested: str, need_gpu_mb: int, keep: set[str]) -> str:
         if not cuda_available():
