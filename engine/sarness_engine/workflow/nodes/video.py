@@ -264,21 +264,31 @@ def _hunyuan15_sample(ctx, handle, cond, start, w, h, frames, steps, seed, param
     guidance = float(params["guidance"])
     pipe.guider.guidance_scale = guidance
 
-    def cb(p, i, t, kw):
-        ctx.progress(i + 1, steps, f"Step {i + 1}/{steps}")
-        return kw
-
     kwargs: dict[str, Any] = dict(prompt=cond["prompt"], negative_prompt=cond.get("negative_prompt") or None,
                                   num_frames=frames, num_inference_steps=steps,
-                                  generator=torch.Generator(device="cpu").manual_seed(seed), output_type="np",
-                                  callback_on_step_end=cb)
+                                  generator=torch.Generator(device="cpu").manual_seed(seed), output_type="np")
     if handle.family == "hunyuanvideo15-i2v":
         kwargs["image"] = ImageOps.fit(start[0].convert("RGB"), (w, h), Image.LANCZOS)
     else:
         kwargs.update(height=h, width=w)
+    # These pipelines take no step callback, so progress and cancellation hook the scheduler's step instead.
+    sched = pipe.scheduler
+    step_fn = sched.step
+    done = [0]
+
+    def step(*a, **kw):
+        res = step_fn(*a, **kw)
+        done[0] += 1
+        ctx.progress(done[0], steps, f"Step {done[0]}/{steps}")
+        return res
+
     ctx.progress(0, steps, "Sampling")
-    with torch.inference_mode():
-        out = pipe(**kwargs)
+    sched.step = step
+    try:
+        with torch.inference_mode():
+            out = pipe(**kwargs)
+    finally:
+        del sched.step
     pil = _frames_to_pil(out.frames[0])
     fps = float(params["fps"])
     ctx.annotate(seed=seed, steps=steps, guidance=guidance, width=pil[0].width, height=pil[0].height,

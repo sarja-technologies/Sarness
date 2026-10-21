@@ -168,12 +168,20 @@ def test_hunyuan_video_sets_guidance_on_its_guider_and_crops_the_start_frame():
     from sarness_engine.runtime.models import ModelHandle
     from sarness_engine.workflow.nodes import video as v
 
+    class Sched:
+        def step(self, *a, **kw):
+            return a
+
     class Pipe:
         guider = SimpleNamespace(guidance_scale=6.0)
 
+        def __init__(self):
+            self.scheduler = Sched()
+
         def __call__(self, **kw):
+            assert "callback_on_step_end" not in kw, "the HunyuanVideo 1.5 pipelines take no step callback"
             self.kw = kw
-            kw["callback_on_step_end"](self, 0, 0, {})
+            self.scheduler.step(0, 0, 0)
             w, h = kw["image"].size if "image" in kw else (kw["width"], kw["height"])
             return SimpleNamespace(frames=[np.zeros((kw["num_frames"], h, w, 3), dtype=np.float32)])
 
@@ -192,3 +200,5 @@ def test_hunyuan_video_sets_guidance_on_its_guider_and_crops_the_start_frame():
         assert pipe.kw["num_frames"] == 121, "snapped to 4k+1"
         assert len(out["frames"]) == 121 and out["frames"][0].size == (848, 480)
         assert ("height" in pipe.kw) == (start is None), "image-to-video takes its size from the start frame"
+        assert ctx.steps[-1][:2] == (1, 30), "progress comes from the scheduler's steps"
+        assert "step" not in vars(pipe.scheduler), "the scheduler is restored afterwards"
