@@ -255,3 +255,27 @@ def test_packed_attention_matches_the_dense_padding_mask():
     assert padding_vector(causal, 14) is None
     assert torch.allclose(packed(sdpa)(q, k, v, attn_mask=causal), sdpa(q, k, v, attn_mask=causal))
     assert packed(packed(sdpa)) is not sdpa and getattr(packed(sdpa), "_sarness_packed")
+
+
+def test_unified_memory_drops_model_files_from_the_page_cache_and_never_offloads(monkeypatch, tmp_path):
+    torch = pytest.importorskip("torch")
+    import os
+
+    from sarness_engine.runtime import models as rm
+
+    (tmp_path / "transformer").mkdir()
+    for name in ("model_index.json", "transformer/a.safetensors", "transformer/b.safetensors"):
+        (tmp_path / name).write_bytes(b"x")
+    advised = []
+    monkeypatch.setattr(os, "posix_fadvise", lambda fd, off, n, advice: advised.append(advice))
+    mm = rm.ModelManager()
+    monkeypatch.setattr(rm, "unified_memory", lambda: False)
+    mm._store("image:a", rm._Loaded(torch.nn.Linear(1, 1), 1, "image", "gpu"), str(tmp_path))
+    assert advised == [], "discrete GPUs keep the page cache"
+    monkeypatch.setattr(rm, "unified_memory", lambda: True)
+    mm._store("image:b", rm._Loaded(torch.nn.Linear(1, 1), 1, "image", "gpu"), str(tmp_path))
+    assert advised == [os.POSIX_FADV_DONTNEED] * 3 and mm.loaded_keys() == ["image:a", "image:b"]
+
+    monkeypatch.setattr(rm, "cuda_available", lambda: True)
+    monkeypatch.setattr(mm, "make_room", lambda need, keep=None: None)
+    assert [mm._choose_mode(m, 50_000, set()) for m in ("auto", "gpu", "offload", "sequential")] == ["gpu"] * 4

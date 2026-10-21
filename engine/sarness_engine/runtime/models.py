@@ -15,6 +15,7 @@ from __future__ import annotations
 import gc
 import json
 import logging
+import os
 import re
 import time
 from collections import OrderedDict
@@ -92,6 +93,24 @@ def free_vram_mb() -> int:
         return psutil.virtual_memory().available // (1024 * 1024)
     free, _total = torch.cuda.mem_get_info()
     return free // (1024 * 1024)
+
+
+def drop_file_cache(path: str | Path) -> None:
+    """Evicts a loaded model's files from the page cache. On unified memory (GB10) CUDA allocations count only
+    free memory and do not reclaim the page cache, so the cached copy of the files a model was just read from
+    (as large as the model) otherwise leaves later allocations failing with most memory merely "available"."""
+    p = Path(path)
+    for f in ([p] if p.is_file() else (x for x in p.rglob("*") if x.is_file())):
+        try:
+            fd = os.open(f, os.O_RDONLY)
+        except OSError:
+            continue
+        try:
+            os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+        except (OSError, AttributeError):
+            pass
+        finally:
+            os.close(fd)
 
 
 def apply_memory_budget() -> int | None:
@@ -200,6 +219,11 @@ class ModelManager:
             return item.obj
         return None
 
+    def _store(self, key: str, item: _Loaded, path: str | None) -> None:
+        self._cache[key] = item
+        if path and unified_memory():
+            drop_file_cache(path)
+
     def evict(self, key: str) -> None:
         item = self._cache.pop(key, None)
         if item is None:
@@ -259,7 +283,10 @@ class ModelManager:
     def _choose_mode(self, requested: str, need_gpu_mb: int, keep: set[str]) -> str:
         if not cuda_available():
             return "cpu"
-        if requested == "auto" and unified_memory():
+        if unified_memory():
+            # Offloading cannot save memory when the GPU uses system RAM: it keeps a CPU copy next to the
+            # working GPU copy and roughly doubles usage (measured: Qwen-Image retried "with offload" went from
+            # 55 GB to the edge of the machine's 121 GB). Requested offload modes are therefore placed on the GPU.
             self.make_room(need_gpu_mb, keep)
             return "gpu"
         if requested in ("gpu", "offload", "sequential"):
@@ -308,7 +335,8 @@ class ModelManager:
         mode = self._choose_mode(memory_mode, est, keep={key})
         self._place(pipe, mode)
         log.info("loaded %s (%s) in %.1fs, mode=%s", info["id"], family, time.perf_counter() - t0, mode)
-        self._cache[key] = _Loaded((pipe, mode), est if mode == "gpu" else int(info.get("vram_offload_mb") or est // 2), "image", mode)
+        vram = est if mode == "gpu" else int(info.get("vram_offload_mb") or est // 2)
+        self._store(key, _Loaded((pipe, mode), vram, "image", mode), info.get("path"))
         return ModelHandle(key, info["id"], family, info, pipe, mode)
 
     def vae(self, info: dict[str, Any]) -> Any:
@@ -323,7 +351,7 @@ class ModelManager:
         vae = (AutoencoderKL.from_single_file(str(path), dtype=dtype) if path.is_file()
                else AutoencoderKL.from_pretrained(str(path), dtype=dtype, **fast_load()))
         vae.to(device())
-        self._cache[key] = _Loaded(vae, int(info.get("vram_mb") or 400), "vae", "gpu")
+        self._store(key, _Loaded(vae, int(info.get("vram_mb") or 400), "vae", "gpu"), info.get("path"))
         return vae
 
     def controlnet(self, info: dict[str, Any]) -> Any:
@@ -338,7 +366,7 @@ class ModelManager:
         variant = "fp16" if _has(path, "*.fp16.safetensors") else None
         cn = ControlNetModel.from_pretrained(str(path), dtype=dtype, variant=variant, use_safetensors=True,
                                              **fast_load())
-        self._cache[key] = _Loaded(cn, int(info.get("vram_mb") or 2500), "controlnet", "lazy")
+        self._store(key, _Loaded(cn, int(info.get("vram_mb") or 2500), "controlnet", "lazy"), info.get("path"))
         return cn
 
     def upscaler(self, info: dict[str, Any]) -> Any:
@@ -360,7 +388,7 @@ class ModelManager:
             desc.to("cuda")
             if desc.supports_half:
                 desc.model.half()
-        self._cache[key] = _Loaded(desc, int(info.get("vram_mb") or 1000), "upscaler", "gpu")
+        self._store(key, _Loaded(desc, int(info.get("vram_mb") or 1000), "upscaler", "gpu"), info.get("path"))
         return desc
 
     # ----------------------------------------------------------- video models
@@ -432,7 +460,7 @@ class ModelManager:
                 else:  # sequential
                     _stream_module(pipe.transformer, "leaf_level")
         log.info("loaded %s in %.1fs, mode=%s (text encoder %d MiB)", info["id"], time.perf_counter() - t0, mode, te_bytes_mb)
-        self._cache[key] = _Loaded((pipe, mode), est, "video", mode)
+        self._store(key, _Loaded((pipe, mode), est, "video", mode), info.get("path"))
         return ModelHandle(key, info["id"], family, info, pipe, mode)
 
 
@@ -450,7 +478,7 @@ class ModelManager:
         t0 = time.perf_counter()
         pipe = load_minimax_h3(info["path"], device())
         log.info("loaded %s (minimaxh3) in %.1fs", info["id"], time.perf_counter() - t0)
-        self._cache[key] = _Loaded((pipe, "gpu"), est, "video", "gpu")
+        self._store(key, _Loaded((pipe, "gpu"), est, "video", "gpu"), info.get("path"))
         return ModelHandle(key, info["id"], "minimaxh3", info, pipe, "gpu")
 
     def _native_pipeline(self, kind: str, info: dict[str, Any], memory_mode: str) -> ModelHandle:
@@ -481,7 +509,7 @@ class ModelManager:
             mode = "offload"
         self._place(pipe, mode)
         log.info("loaded %s (%s) in %.1fs, mode=%s", info["id"], family, time.perf_counter() - t0, mode)
-        self._cache[key] = _Loaded((pipe, mode), est, kind, mode)
+        self._store(key, _Loaded((pipe, mode), est, kind, mode), info.get("path"))
         return ModelHandle(key, info["id"], family, info, pipe, mode)
 
 
@@ -523,6 +551,8 @@ def apply_loras(handle: ModelHandle) -> None:
                 pipe.load_lora_weights(str(p), weight_name=files[0].name, adapter_name=name)
             else:
                 pipe.load_lora_weights(str(p.parent), weight_name=p.name, adapter_name=name)
+            if unified_memory():
+                drop_file_cache(p)
             loaded[name] = ref.path
         names.append(name)
         weights.append(ref.weight)
