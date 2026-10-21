@@ -601,3 +601,29 @@ def test_a_job_whose_worker_was_killed_for_memory_fails_instead_of_retrying(clie
     assert first["status"] == "queued" and first["attempts"] == 1, "an ordinary crash is retried"
     assert second["status"] == "failed" and "out of memory" in second["error"]["message"], \
         "running the same job again would only exhaust memory again"
+
+
+def test_the_supervisor_stops_the_worker_before_the_machine_runs_out_of_memory(monkeypatch):
+    import psutil
+
+    from sarness_engine.jobs import supervisor as sv
+
+    avail = iter([20_000, 9_000, 3_000])
+    monkeypatch.setattr(psutil, "virtual_memory", lambda: SimpleNamespace(total=128 * 2**30,
+                                                                          available=next(avail) * 2**20))
+
+    class Proc:
+        killed = False
+
+        def is_alive(self):
+            return not self.killed
+
+        def kill(self):
+            self.killed = True
+
+    proc = Proc()
+    sup = sv.WorkerSupervisor({}, lambda m: None, lambda *a: None)
+    sup._guard_memory(proc, interval=0)
+    assert proc.killed, "3 GB left is below the 3 % floor (3.8 GB of 128 GB)"
+    monkeypatch.setattr(psutil, "virtual_memory", lambda: SimpleNamespace(total=32 * 2**30, available=0))
+    assert sv.memory_floor_mb() == 4096

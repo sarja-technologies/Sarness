@@ -75,7 +75,7 @@ def worker_main(conn, options: dict[str, Any]) -> None:  # pragma: no cover - ex
 
     from ..workflow.executor import NodeCache, execute
     from ..workflow.types import Cancelled, WorkflowError
-    from .models import ModelManager, cuda_available, free_vram_mb, total_vram_mb
+    from .models import ModelManager, apply_memory_budget, cuda_available, free_vram_mb, total_vram_mb
 
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
@@ -144,6 +144,9 @@ def worker_main(conn, options: dict[str, Any]) -> None:  # pragma: no cover - ex
         t0 = time.perf_counter()
         if cuda_available():
             torch.cuda.reset_peak_memory_stats()
+            budget = apply_memory_budget()
+            if budget is not None:
+                log.info("job %s: memory budget %d MiB", job_id, budget)
 
         def emit(event: dict[str, Any]) -> None:
             send(event)

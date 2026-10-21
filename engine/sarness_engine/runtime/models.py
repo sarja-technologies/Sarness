@@ -94,6 +94,22 @@ def free_vram_mb() -> int:
     return free // (1024 * 1024)
 
 
+def apply_memory_budget() -> int | None:
+    """On unified memory, caps this process's PyTorch allocations at what it holds plus what the system can still
+    spare, keeping a margin above the supervisor's hard floor: an oversized job then raises a CUDA out-of-memory
+    error (handled like any OOM) instead of exhausting the machine. Returns the budget in MiB."""
+    if not cuda_available() or not unified_memory():
+        return None
+    import psutil
+
+    from ..jobs.supervisor import memory_floor_mb
+
+    total = torch.cuda.mem_get_info()[1]
+    budget = torch.cuda.memory_reserved() + psutil.virtual_memory().available - (memory_floor_mb() + 4096) * 2**20
+    torch.cuda.set_per_process_memory_fraction(min(1.0, max(0.05, budget / total)))
+    return budget // 2**20
+
+
 def total_vram_mb() -> int:
     if not cuda_available():
         return 0
@@ -226,6 +242,7 @@ class ModelManager:
             torch.cuda.ipc_collect()
 
     def make_room(self, need_mb: int, keep: set[str] | None = None) -> None:
+        apply_memory_budget()  # other processes (a chat model) may have grown since the job started
         keep = keep or set()
         for key in list(self._cache):
             if free_vram_mb() >= need_mb + self.headroom_mb:
