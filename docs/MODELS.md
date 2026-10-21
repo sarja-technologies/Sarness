@@ -91,6 +91,62 @@ All clips were inspected: subjects and scenes follow the prompt, LTX-2.3 and Min
 (H3: 32 kHz AAC whose two channels differ, i.e. real stereo). The I2V clip keeps its start frame faithfully but
 moves very little; the steam asked for in its prompt is not visible.
 
+### Model expansion (October 2026)
+
+Benchmarks are repeatable: `bench2.py` drives the engine API with fixed prompts and seeds (seven scenes × the
+*none* and *iPhone* styles for images; one harbour scene for video; twelve prompts for chat models) and records
+load time, sampling time and the drop in available system memory (*memory*; PyTorch's own peak counts every model
+still cached in the worker, so it is not used here). Every output was looked at.
+
+**Text to image** (warm = model already loaded):
+
+| Model | Licence | Settings | Load | Per image | Memory | Verdict |
+|---|---|---|---|---|---|---|
+| Qwen-Image-2512 | Apache-2.0 | 1328², 50 steps, true CFG 4 | 65 s | 272 s | 55 GB | Most natural faces and skin; signs spelled correctly |
+| Qwen-Image-2512 + Lightning LoRA (lightx2v, Apache-2.0) | | 1328², 8 steps, CFG 1 | — | 28–31 s | 55 GB | Close to the 50-step image at 9× the speed; slightly glossier light |
+| Qwen-Image 2.1 | Apache-2.0 | 1024², 40 steps | 38 s | 107 s | 28 GB | Excellent: correct text, real hands, convincing iPhone style |
+| Z-Image-Turbo | Apache-2.0 | 1024², 9 steps, no CFG | 40 s | 12.4 s | 32 GB while loading, 22 GB resident | Perfect text and hands; iPhone style keeps some background blur |
+| Z-Image-Turbo + Realism LoRA (suayptalha, Apache-2.0) | | trigger "Realism" | — | 14.6–15.4 s | +0.1 GB | Works, but not clearly more realistic (snapshot look, odd details); optional only |
+| FLUX.2 Klein 4B | Apache-2.0 | 1024², 4 steps | 18 s | 3.4 s | 19 GB | Best iPhone look for its speed; plain-style text has errors; hands weaker |
+
+The *iPhone / candid photo* style (Styles menu, all image families) rewrites the prompt and negative prompt; it was
+tested on every model above (56 images in all) and gives deeper focus, phone-like exposure and less polish.
+
+**Editing, image-to-image and inpainting** (1024², bf16; source images from the run above):
+
+| Model | Task | Time | Memory | Result |
+|---|---|---|---|---|
+| Qwen-Image-Edit-2511 (Apache-2.0) | one reference (mugs → wine, evening light) | 278 s (+64 s load) | 55 GB | Faces, clothes and layout kept; every mug replaced |
+| Qwen-Image-Edit-2511 | two references (person into another room) | 455 s | | Identity kept; the room is only loosely the second image's |
+| Qwen-Image-Edit-2511 | change a sign's text | 277 s | | Exact new text in the same handwriting |
+| FLUX.2 Klein 4B | the same three edits | 6.6–10.4 s | 19 GB | Good single edit; the sign text came out wrong; second reference pasted in rather than combined |
+| Z-Image-Turbo | img2img (strength 0.55, iPhone style) | 7.8 s | 34 GB | |
+| Qwen-Image-2512 | img2img (strength 0.6) | 98 s | 55 GB | |
+| Z-Image-Turbo / FLUX.2 Klein 4B / Qwen-Image-2512 | inpaint (strength 0.9, cake into a masked table) | 12.8 s / 6.7 s / 114 s | 28 / 16 / 55 GB | All three blend the new object into the scene |
+
+**Low-refusal chat models** (llama.cpp, context 32 768; twelve prompts: two reasoning, coding checked by running the
+code, instruction following, knowledge, a 200-word story, six borderline requests that stock models often refuse;
+memory is what the loaded model takes):
+
+| Model | Load | Memory | Generation | Reasoning | Code | Instructions | Knowledge | Story length | Answered (of 6) |
+|---|---|---|---|---|---|---|---|---|---|
+| Qwen3.8 27B (original, UD-Q6_K) | 6.5 s | 27 GB | 21.4 tok/s | 2/2 | ✓ | ✓ | ✓ | 277 words | 5 (refused lock-picking) |
+| Huihui Qwen3.8 27B abliterated Q6_K | 5.8 s | 25 GB | 9.7 tok/s | 2/2 | ✓ | ✓ | ✓ | 267 | 6 |
+| Qwen3.8 27B Uncensored HauhauCS Q6_K_P | 6.4 s | 28 GB | 8.7 tok/s | 2/2 | ✓ | ✓ | ✓ | 251 ✓ | 6 |
+| Huihui Qwen3.5 27B abliterated Q6_K | 5.8 s | 25 GB | 9.7 tok/s | 2/2 | ✓ | ✓ | ✓ | 277 | 6 |
+| Qwen3.8 Flash Next (original, UD-IQ4_XS) | 10.6 s | 68 GB | 38.4 tok/s | 2/2 | ✓ | ✓ | ✓ | 230 ✓ | 5 (refused lock-picking) |
+| Huihui Qwen3.8 Flash Next abliterated UD-IQ4_XS | 8.4 s | 63 GB | 28.8 tok/s | 2/2 | ✓ | ✓ | ✓ | 271 | 6 |
+| Dolphin 3.0 R1 Mistral 24B Q6_K | 4.1 s | 24 GB | 11.3 tok/s | 2/2 | ✗ | ✗ | ✗ | 565 | 6 |
+| Hermes 4 70B Q4_K_M | 7.4 s | 51 GB | 4.9 tok/s | 0/2 | ✓ | ✓ | ✓ | 263 | 6 |
+
+The original Qwen3.8 27B and Flash Next come with separate multi-token-prediction (MTP) draft files that the engine
+uses for speculative decoding (37–73 % of drafted tokens accepted); the Huihui conversions have none, which is why
+they generate 2× (27B) and 1.3× (Flash Next) slower at the same size. The HauhauCS GGUF embeds its MTP layer
+(`blk.64.nextn.*`) in the main file, which the engine does not use yet. The stock models answered the drug-harm-reduction request with a disclaimer and refused only the
+lock-picking one; the low-refusal models answered all six without disclaimers. Prompt processing for these short
+prompts took 0.13–0.46 s. Recommended: **Huihui Qwen3.8 Flash Next abliterated** (fast, strongest) and **HauhauCS
+Qwen3.8 27B** (best of the 27B class, fits beside an image model).
+
 ## Installed but not exercised
 
 | Model | Status |
@@ -116,7 +172,9 @@ moves very little; the steam asked for in its prompt is not visible.
 
 ## Not supported (honest list)
 
-FLUX, SD3, LTX-Video (the original; LTX-2 is supported), HunyuanVideo, CogVideoX, Qwen-Image 1.0 (2.1 is
-supported), Z-Image (only through the RTX server's gateway), PixArt-Σ and Sana pipelines are recognised but have no
-native runtime adapter; the model browser flags them before download. IP-Adapter, prompt weighting syntax and
+FLUX.1, SD3, LTX-Video (the original; LTX-2 is supported), the original HunyuanVideo (1.5 is supported),
+CogVideoX, Qwen-Image 1.0 (2512, 2.1 and Edit-2511 are supported), PixArt-Σ and Sana pipelines are recognised but
+have no native runtime adapter; the model browser flags them before download. FLUX.2 [dev], FLUX.2 Klein 9B and
+other gated repositories need the user to accept the licence on Hugging Face and add a token in Settings; they are
+not installed. IP-Adapter, prompt weighting syntax and
 motion-control parameters are not implemented.
