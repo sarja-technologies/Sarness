@@ -145,8 +145,8 @@ memory is what the loaded model takes):
 | Model | Load | Memory | Generation | Reasoning | Code | Instructions | Knowledge | Story length | Answered (of 6) |
 |---|---|---|---|---|---|---|---|---|---|
 | Qwen3.8 27B (original, UD-Q6_K) | 6.5 s | 27 GB | 21.4 tok/s | 2/2 | ✓ | ✓ | ✓ | 277 words | 5 (refused lock-picking) |
-| Huihui Qwen3.8 27B abliterated Q6_K | 5.8 s | 25 GB | 9.7 tok/s | 2/2 | ✓ | ✓ | ✓ | 267 | 6 |
-| Qwen3.8 27B Uncensored HauhauCS Q6_K_P | 6.4 s | 28 GB | 8.7 tok/s | 2/2 | ✓ | ✓ | ✓ | 251 ✓ | 6 |
+| Huihui Qwen3.8 27B abliterated Q6_K | 6.2 s | 26 GB | 20.4 tok/s (MTP; 9.7 without) | 2/2 | ✓ | ✓ | ✓ | 267 | 6 |
+| Qwen3.8 27B Uncensored HauhauCS Q6_K_P | 6.9 s | 30 GB | 18.2 tok/s (MTP; 8.7 without) | 2/2 | ✓ | ✓ | ✓ | 251 ✓ | 6 |
 | Huihui Qwen3.5 27B abliterated Q6_K | 5.8 s | 25 GB | 9.7 tok/s | 2/2 | ✓ | ✓ | ✓ | 277 | 6 |
 | Qwen3.8 Flash Next (original, UD-IQ4_XS) | 10.6 s | 68 GB | 38.4 tok/s | 2/2 | ✓ | ✓ | ✓ | 230 ✓ | 5 (refused lock-picking) |
 | Huihui Qwen3.8 Flash Next abliterated UD-IQ4_XS | 8.4 s | 63 GB | 28.8 tok/s | 2/2 | ✓ | ✓ | ✓ | 271 | 6 |
@@ -154,12 +154,19 @@ memory is what the loaded model takes):
 | Hermes 4 70B Q4_K_M | 7.4 s | 51 GB | 4.9 tok/s | 0/2 | ✓ | ✓ | ✓ | 263 | 6 |
 
 The original Qwen3.8 27B and Flash Next come with separate multi-token-prediction (MTP) draft files that the engine
-uses for speculative decoding (37–73 % of drafted tokens accepted); the Huihui conversions have none, which is why
-they generate 2× (27B) and 1.3× (Flash Next) slower at the same size. The HauhauCS GGUF embeds its MTP layer
-(`blk.64.nextn.*`) in the main file, which the engine does not use yet. The stock models answered the drug-harm-reduction request with a disclaimer and refused only the
+uses for speculative decoding (37–73 % of drafted tokens accepted). The HauhauCS and Huihui Qwen3.8 27B GGUFs carry
+the MTP block inside the model file (`blk.64.nextn.*`); the engine detects it from the header and drafts with it too,
+which doubled their speed with the same answers (all checks identical with and without; +1.2 GB). Huihui Qwen3.5 27B
+and the Huihui Flash Next conversion have no MTP block, which is why Flash Next abliterated stays 1.3× slower than
+the original. For Qwen3.5 0.8B, which also embeds one, MTP gives 176–255 tok/s against 207 without (slower on prose,
+faster on code and lists). The stock models answered the drug-harm-reduction request with a disclaimer and refused only the
 lock-picking one; the low-refusal models answered all six without disclaimers. Prompt processing for these short
 prompts took 0.13–0.46 s. Recommended: **Huihui Qwen3.8 Flash Next abliterated** (fast, strongest) and **HauhauCS
-Qwen3.8 27B** (best of the 27B class, fits beside an image model).
+Qwen3.8 27B** (best of the 27B class, 18 tok/s, fits beside an image model).
+
+**Switching between chat and image models.** With Flash Next abliterated (63 GB) loaded, a Qwen-Image-2512 job
+(55 GB, 1024², 8 Lightning steps) unloaded the idle chat model and finished in 88 s; loading the chat model again
+stopped the image worker and took 10.4 s. Available memory never fell below 55 GB and nothing was killed.
 
 ## Installed but not exercised
 
