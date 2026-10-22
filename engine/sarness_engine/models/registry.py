@@ -98,7 +98,7 @@ def guess_checkpoint_family(path: Path) -> str | None:
 
 
 def gguf_metadata(path: Path) -> dict[str, Any]:
-    """Reads a few GGUF header fields (architecture, context length) without llama.cpp."""
+    """Reads a few GGUF header fields (architecture, context length, MTP layers) without llama.cpp."""
     out: dict[str, Any] = {}
     try:
         with open(path, "rb") as f:
@@ -107,7 +107,7 @@ def gguf_metadata(path: Path) -> dict[str, Any]:
             version = struct.unpack("<I", f.read(4))[0]
             if version < 2:
                 return out
-            _tensors, kv = struct.unpack("<QQ", f.read(16))
+            tensors, kv = struct.unpack("<QQ", f.read(16))
 
             def rstr():
                 (ln,) = struct.unpack("<Q", f.read(8))
@@ -146,8 +146,17 @@ def gguf_metadata(path: Path) -> dict[str, Any]:
                     out["file_type"] = val
                 elif key.endswith(".block_count"):
                     out["layers"] = val
-                if len(out) >= 5:
-                    break
+                elif key.endswith(".nextn_predict_layers") and val:
+                    out["nextn_layers"] = val  # an MTP head inside the model file, if its tensors were kept
+            if out.get("nextn_layers") and kv <= 4096:  # the tensor list follows the last key
+                for _ in range(tensors):
+                    name = rstr()
+                    if ".nextn." in name:
+                        break
+                    (dims,) = struct.unpack("<I", f.read(4))
+                    f.seek(8 * dims + 12, 1)
+                else:
+                    del out["nextn_layers"]
     except Exception as exc:
         log.debug("gguf header read failed for %s: %s", path, exc)
     return out

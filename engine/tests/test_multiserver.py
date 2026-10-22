@@ -537,6 +537,30 @@ def test_llama_reads_model_up_front_on_unified_memory(tmp_path, monkeypatch):
     llama.no_mmap_args.cache_clear()
 
 
+def test_llama_drafts_with_a_separate_or_an_embedded_mtp_head(tmp_path, monkeypatch):
+    seen = {}
+
+    class Stop(Exception):
+        pass
+
+    def fake_popen(args, **kw):
+        seen["args"] = args
+        raise Stop
+
+    monkeypatch.setattr(llama.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(llama, "gpus", lambda: [{"unified_memory": False}])
+    srv = llama.LlamaServer.__new__(llama.LlamaServer)
+    for meta, expect in [({"mtp": "/m/mtp-x.gguf"}, ["--spec-type", "draft-mtp", "-md", "/m/mtp-x.gguf"]),
+                         ({"nextn_layers": 1}, ["--spec-type", "draft-mtp"]), ({"nextn_layers": 0}, []), ({}, [])]:
+        srv.__init__(SimpleNamespace(binary=lambda: "/bin/x", version=lambda: "x", env=lambda: {}), tmp_path)
+        with pytest.raises(Stop):
+            srv.load({"id": "m", "path": str(tmp_path / "m.gguf"), "meta": meta}, ctx=4096, gpu_layers=999,
+                     flash_attn=True)
+        args = seen["args"]
+        assert [a for a in args if a in ("--spec-type", "draft-mtp", "-md") or a.startswith("/m/")] == expect, meta
+        assert ("--spec-draft-n-max" in args) == bool(expect)
+
+
 def test_stopping_the_gpu_worker_survives_the_reader_seeing_it_exit():
     """llm/load stopped the idle diffusion worker; the reader thread cleared the process as soon as the
     worker exited, while stop() was still waiting for it (AttributeError: 'NoneType' ... 'is_alive')."""

@@ -103,7 +103,7 @@ def test_registry_discovers_layouts(cfg):
     assert "gguf:tiny-q4" not in {i["id"] for i in reg.scan()}
 
 
-def _write_gguf(path):
+def _write_gguf(path, nextn=None, tensor_names=()):
     import struct
 
     def s(x):
@@ -112,7 +112,15 @@ def _write_gguf(path):
 
     kv = s("general.architecture") + struct.pack("<I", 8) + s("llama")
     kv += s("llama.context_length") + struct.pack("<I", 4) + struct.pack("<I", 4096)
-    path.write_bytes(b"GGUF" + struct.pack("<I", 3) + struct.pack("<QQ", 0, 2) + kv)
+    n = 2
+    if nextn is not None:
+        kv += s("tokenizer.ggml.model") + struct.pack("<I", 8) + s("gpt2")
+        kv += s("llama.nextn_predict_layers") + struct.pack("<I", 4) + struct.pack("<I", nextn)
+        n = 4
+    tensors = b""
+    for name in tensor_names:
+        tensors += s(name) + struct.pack("<I", 1) + struct.pack("<Q", 8) + struct.pack("<IQ", 0, 0)
+    path.write_bytes(b"GGUF" + struct.pack("<I", 3) + struct.pack("<QQ", len(tensor_names), n) + kv + tensors)
 
 
 def test_gguf_metadata(tmp_path):
@@ -120,3 +128,8 @@ def test_gguf_metadata(tmp_path):
     _write_gguf(p)
     md = gguf_metadata(p)
     assert md == {"architecture": "llama", "context_length": 4096}
+    _write_gguf(p, nextn=1, tensor_names=["blk.0.attn_q.weight", "blk.1.nextn.eh_proj.weight"])
+    assert gguf_metadata(p) == {"architecture": "llama", "context_length": 4096, "nextn_layers": 1}, \
+        "an embedded MTP head is reported, even after the vocabulary"
+    _write_gguf(p, nextn=1, tensor_names=["blk.0.attn_q.weight"])
+    assert "nextn_layers" not in gguf_metadata(p), "a header that names an MTP layer whose tensors were dropped"
