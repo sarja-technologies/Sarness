@@ -9,9 +9,12 @@ masked out as keys everywhere.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable
 
 import torch
+
+log = logging.getLogger("sarness.attention")
 
 
 def padding_vector(mask: Any, seq: int) -> torch.Tensor | None:
@@ -46,6 +49,10 @@ def packed(fn: Callable[..., torch.Tensor]) -> Callable[..., torch.Tensor]:
         seq = query.shape[1]
         valid = padding_vector(attn_mask, seq) if key.shape[1] == seq else None
         if valid is None:
+            if attn_mask is not None and not attention._warned:
+                attention._warned = True
+                log.warning("attention mask %s is not a padding mask; using the masked kernel (slow)",
+                            tuple(getattr(attn_mask, "shape", ())))
             return fn(query, key, value, attn_mask=attn_mask, **kw)
         if bool(valid.all()):
             return fn(query, key, value, attn_mask=None, **kw)
@@ -58,6 +65,7 @@ def packed(fn: Callable[..., torch.Tensor]) -> Callable[..., torch.Tensor]:
         return out
 
     attention._sarness_packed = True
+    attention._warned = False
     return attention
 
 
