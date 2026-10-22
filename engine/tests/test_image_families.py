@@ -174,6 +174,7 @@ def test_hunyuan_video_sets_guidance_on_its_guider_and_crops_the_start_frame():
 
     class Pipe:
         guider = SimpleNamespace(guidance_scale=6.0)
+        target_size = 960
 
         def __init__(self):
             self.scheduler = Sched()
@@ -182,7 +183,12 @@ def test_hunyuan_video_sets_guidance_on_its_guider_and_crops_the_start_frame():
             assert "callback_on_step_end" not in kw, "the HunyuanVideo 1.5 pipelines take no step callback"
             self.kw = kw
             self.scheduler.step(0, 0, 0)
-            w, h = kw["image"].size if "image" in kw else (kw["width"], kw["height"])
+            if "image" in kw:  # the bucket closest to the frame's aspect, with an area of target_size²
+                iw, ih = kw["image"].size
+                w = round((self.target_size ** 2 * iw / ih) ** 0.5 / 16) * 16
+                h = round((self.target_size ** 2 * ih / iw) ** 0.5 / 16) * 16
+            else:
+                w, h = kw["width"], kw["height"]
             return SimpleNamespace(frames=[np.zeros((kw["num_frames"], h, w, 3), dtype=np.float32)])
 
     for family, start in (("hunyuanvideo15", None), ("hunyuanvideo15-i2v", [_img(1920, 1080)])):
@@ -198,8 +204,9 @@ def test_hunyuan_video_sets_guidance_on_its_guider_and_crops_the_start_frame():
                                             "guidance": 5.0, "flow_shift": 3.0})["video"]
         assert pipe.guider.guidance_scale == 5.0
         assert pipe.kw["num_frames"] == 121, "snapped to 4k+1"
-        assert len(out["frames"]) == 121 and out["frames"][0].size == (848, 480)
+        assert len(out["frames"]) == 121 and out["frames"][0].size == (848, 480), "not the checkpoint's 720p"
         assert ("height" in pipe.kw) == (start is None), "image-to-video takes its size from the start frame"
+        assert pipe.target_size == (640 if start else 960)
         assert ctx.steps[-1][:2] == (1, 30), "progress comes from the scheduler's steps"
         assert "step" not in vars(pipe.scheduler), "the scheduler is restored afterwards"
 

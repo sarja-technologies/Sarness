@@ -256,8 +256,9 @@ def _frames_to_pil(video):
 
 def _hunyuan15_sample(ctx, handle, cond, start, w, h, frames, steps, seed, params):
     """HunyuanVideo 1.5: separate text-to-video and image-to-video checkpoints. Guidance lives in the
-    pipeline's guider component rather than in the call; the image-to-video pipeline takes its size from
-    the start frame, so the frame is cropped to the requested size first."""
+    pipeline's guider component rather than in the call; the image-to-video pipeline takes its aspect from
+    the start frame and its area from target_size (960, i.e. 720p, in the checkpoint), so the frame is cropped to
+    the requested size and target_size is set from the requested area."""
     import torch
 
     pipe = handle.pipe
@@ -269,6 +270,7 @@ def _hunyuan15_sample(ctx, handle, cond, start, w, h, frames, steps, seed, param
                                   generator=torch.Generator(device="cpu").manual_seed(seed), output_type="np")
     if handle.family == "hunyuanvideo15-i2v":
         kwargs["image"] = ImageOps.fit(start[0].convert("RGB"), (w, h), Image.LANCZOS)
+        pipe.target_size = max(16, round((w * h) ** 0.5 / 16) * 16)  # 848×480 → 640, 1280×720 → 960
     else:
         kwargs.update(height=h, width=w)
     # These pipelines take no step callback, so progress and cancellation hook the scheduler's step instead.

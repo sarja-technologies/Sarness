@@ -124,6 +124,20 @@ tested on every model above (56 images in all) and gives deeper focus, phone-lik
 | Qwen-Image-2512 | img2img (strength 0.6) | 98 s | 55 GB | Composition kept; faces change more |
 | Z-Image-Turbo / FLUX.2 Klein 4B / Qwen-Image-2512 | inpaint (strength 0.9, cake into a masked table) | 12.8 s / 6.7 s / 114 s | 28 / 16 / 55 GB | Z-Image and Klein: a convincing lit cake, rest untouched; Qwen: a small cake on a tall stand, no candles |
 
+**Video** (one harbour scene and one start frame; 121 frames = 5 s at 24 fps; *sampling* excludes loading):
+
+| Model | Task | Settings | Load | Sampling | Result |
+|---|---|---|---|---|---|
+| LTX-2.3 (video + stereo audio) | text to video | 1024×576 (16:9), 30 steps | 111 s | 781 s | Sharp, natural motion; stereo audio track |
+| LTX-2.3 | text to video | 576×1024 (9:16), 30 steps | — | 786 s | Same quality in portrait |
+| LTX-2.3 | image to video | 1024×576, 30 steps, Z-Image start frame | 109 s | 884 s | Start frame and identity kept; she looks up as a red bus pulls in, but keeps holding the phone instead of putting it away; stereo audio, all 121 frames |
+| HunyuanVideo 1.5 480p | text to video | 848×480, 50 steps, CFG 6 | 59 s | 4 332 s (87 s/step) | Coherent scene and motion, no audio |
+
+HunyuanVideo 1.5 hides padded text tokens with a dense sequence × sequence mask, which rules out flash attention:
+at 848×480 (~50 k tokens) each step took ~150 s. The engine now attends over only the valid tokens (same result,
+checked against the masked kernel), which gives the 87 s/step above. 720p at 121 frames was not run (estimated
+2–3 h); 61-frame 720p and 9:16 runs are in the benchmark suite but were deferred.
+
 **Low-refusal chat models** (llama.cpp, context 32 768; twelve prompts: two reasoning, coding checked by running the
 code, instruction following, knowledge, a 200-word story, six borderline requests that stock models often refuse;
 memory is what the loaded model takes):
