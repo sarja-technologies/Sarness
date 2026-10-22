@@ -21,15 +21,20 @@ def padding_vector(mask: Any, seq: int) -> torch.Tensor | None:
     if mask.shape[-1] != seq or mask.shape[-2] != seq:
         return None
     m = mask[:, 0]
-    valid = m.any(dim=-1)
-    # m lies inside rows × columns that have any True; with both equal to `valid` and |valid|² entries set,
-    # m is exactly valid ⊗ valid (checked without building a second sequence × sequence tensor).
-    if not torch.equal(m.any(dim=-2), valid):
+    # For m = v ⊗ v the diagonal is v itself. The wrapper is installed only where every mask is built that way
+    # (HunyuanVideo 1.5), so a sample of rows, including the first padded one, guards against a different mask
+    # (a causal mask fails at row 0) without passing over the whole mask on every call: a full check costs 270 ms
+    # per call at 50k tokens, and a sum over it would upcast the booleans to 94 GB of int64.
+    valid = m.diagonal(dim1=-2, dim2=-1)
+    rows = set(range(0, seq, max(1, seq // 16))) | {seq - 1}
+    for b in range(m.shape[0]):
+        pad = (~valid[b]).nonzero()
+        if pad.numel():
+            rows.add(int(pad[0]))
+    rows = torch.tensor(sorted(rows), device=m.device)
+    if not torch.equal(m[:, rows], valid[:, rows, None] & valid[:, None, :]):
         return None
-    n = valid.sum(dim=-1)
-    if not torch.equal(m.sum(dim=(-2, -1)), n * n):
-        return None
-    return valid
+    return valid.clone()
 
 
 def packed(fn: Callable[..., torch.Tensor]) -> Callable[..., torch.Tensor]:
