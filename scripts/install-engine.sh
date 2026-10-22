@@ -160,6 +160,12 @@ SERVICE_MODE="manual"
 if [[ $NO_SERVICE -eq 0 ]] && command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
   UNIT_DIR="$HOME/.config/systemd/user"
   mkdir -p "$UNIT_DIR"
+  # Cap the engine (GPU worker and llama-server included) below the machine's RAM so that, if a job runs out of
+  # memory, the kernel stops it inside the engine instead of killing the desktop, sshd or other services. On
+  # unified-memory systems (DGX Spark) GPU allocations are system RAM and count towards this limit.
+  MEM_KB="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)"
+  RESERVE_KB=$(( MEM_KB / 10 > 8388608 ? MEM_KB / 10 : 8388608 ))
+  MEMORY_MAX="$(( (MEM_KB - RESERVE_KB) / 1024 ))M"
   cat > "$UNIT_DIR/sarness-engine.service" <<UNIT
 [Unit]
 Description=Sarness Engine (AI inference server)
@@ -172,6 +178,9 @@ ExecStart=$ENGINE serve
 Restart=on-failure
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
+MemoryMax=$MEMORY_MAX
+# The engine reports a GPU worker killed for memory as a failed job and starts a new worker itself.
+OOMPolicy=continue
 # Hardening that does not interfere with CUDA
 NoNewPrivileges=yes
 PrivateTmp=yes

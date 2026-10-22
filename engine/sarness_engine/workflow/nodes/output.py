@@ -74,15 +74,16 @@ def save_video(ctx, inputs, params):
     has_audio = False
     if v.get("audio") and fmt != "gif" and not params["fps"]:
         ctx.progress(len(frames), len(frames), "Adding soundtrack")
-        has_audio = _mux_audio(path, v["audio"], fmt)
+        has_audio = _mux_audio(path, v["audio"], fmt, len(frames) / fps)
     mime = {"mp4": "video/mp4", "webm": "video/webm", "gif": "image/gif"}[fmt]
     return {"_outputs": [{"kind": "video", "path": str(path), "width": frames[0].width, "height": frames[0].height,
                           "frames": len(frames), "fps": fps, "duration": len(frames) / fps, "mime": mime,
                           "audio": has_audio}]}
 
 
-def _mux_audio(path, audio: dict, fmt: str) -> bool:
-    """Adds a float waveform (channels × samples, or samples) to an encoded clip with ffmpeg."""
+def _mux_audio(path, audio: dict, fmt: str, duration: float | None = None) -> bool:
+    """Adds a float waveform (channels × samples, or samples) to an encoded clip with ffmpeg. With the clip's
+    duration the waveform is padded or trimmed to it, so no video frame is ever cut off to match the audio."""
     import subprocess
     import wave
     from pathlib import Path
@@ -95,6 +96,9 @@ def _mux_audio(path, audio: dict, fmt: str) -> bool:
         a = a[None, :]
     if a.shape[0] > a.shape[1]:  # samples × channels
         a = a.T
+    if duration:
+        n = round(duration * int(audio["rate"]))
+        a = np.pad(a[:, :n], ((0, 0), (0, max(0, n - a.shape[1]))))
     pcm = (np.clip(a, -1, 1) * 32767).astype("<i2").T.copy()  # interleaved
     path = Path(path)
     wav, muxed = path.with_suffix(".audio.wav"), path.with_suffix(f".muxed.{fmt}")
@@ -106,7 +110,7 @@ def _mux_audio(path, audio: dict, fmt: str) -> bool:
             w.writeframes(pcm.tobytes())
         codec = ["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"] if fmt == "mp4" else ["-c:a", "libopus"]
         r = subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-loglevel", "error", "-i", str(path), "-i", str(wav),
-                            "-map", "0:v", "-map", "1:a", "-c:v", "copy", *codec, "-shortest", str(muxed)],
+                            "-map", "0:v", "-map", "1:a", "-c:v", "copy", *codec, str(muxed)],
                            capture_output=True, text=True, timeout=300)
         if r.returncode != 0:
             raise WorkflowError(f"could not add the soundtrack: {r.stderr.strip()[:300]}")

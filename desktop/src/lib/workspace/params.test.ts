@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { InstalledModel } from '../api/types';
 import { SEED_MAX } from '../util/seed';
-import { applyImageModel, applyVideoModel, imageDefaults, imageDims, imageSimpleParams, isMediaMode, MODE_ORDER, mediaBlocker, placeholderFor, sanitizeMode, stepMode, summaryFor, videoDefaults, videoSimpleParams } from './params';
+import { applyImageModel, applyVideoModel, editsReference, imageDefaults, imageDims, imageSimpleParams, isMediaMode, MODE_ORDER, mediaBlocker, placeholderFor, sanitizeMode, stepMode, summaryFor, videoDefaults, videoSimpleParams } from './params';
 
 const imgModel = { id: 'm-img', capabilities: { negative_prompt: false, lora: false }, defaults: { width: 1024, height: 1024, steps: 8, guidance: 0 }, limits: {} } as unknown as InstalledModel;
 const vidModel = { id: 'm-vid', capabilities: { end_frame: false }, defaults: { width: 832, height: 480, steps: 20, frames: 33, fps: 24 }, limits: {} } as unknown as InstalledModel;
@@ -104,5 +104,49 @@ describe('request bodies', () => {
     v.model = 'm';
     v.vmode = 'i2v';
     expect(mediaBlocker('video', 'hi', v)).toMatch(/start frame/);
+  });
+});
+
+describe('editing models and styles', () => {
+  const editModel = { id: 'qwen-image-edit-2511', capabilities: { modes: ['edit'], references: 3, negative_prompt: true }, defaults: {}, limits: {} } as unknown as InstalledModel;
+  const kleinModel = { id: 'flux2-klein-4b', capabilities: { modes: ['txt2img', 'edit', 'inpaint'], references: 4 }, defaults: {}, limits: {} } as unknown as InstalledModel;
+
+  it('sends the style for any model', () => {
+    const s = imageDefaults();
+    s.model = 'm-img';
+    s.style = 'iphone';
+    expect(imageSimpleParams(s, 'a dog', imgModel).style).toBe('iphone');
+    expect(imageSimpleParams(imageDefaults(), 'a dog', imgModel).style).toBe('none');
+  });
+
+  it('sends extra references only with a reference image and only as many as the model takes', () => {
+    const s = imageDefaults();
+    s.extra_references = ['b', 'c', 'd'];
+    expect(imageSimpleParams(s, 'x', editModel).extra_references).toEqual([]);
+    s.reference_image = 'a';
+    expect(imageSimpleParams(s, 'x', editModel).extra_references).toEqual(['b', 'c']);
+    expect(imageSimpleParams(s, 'x', imgModel).extra_references).toEqual([]); // a model without editing takes none
+  });
+
+  it('tells edit-only models apart and blocks them without an image to edit', () => {
+    expect(editsReference(editModel)).toBe(true);
+    expect(editsReference(kleinModel)).toBe(true);
+    expect(editsReference(imgModel)).toBe(false);
+    const s = imageDefaults();
+    s.model = 'qwen-image-edit-2511';
+    expect(mediaBlocker('image', 'make it night', s, editModel)).toMatch(/image to edit/);
+    expect(mediaBlocker('image', 'a cat', s, kleinModel)).toBeNull();
+    s.reference_image = 'a';
+    expect(mediaBlocker('image', 'make it night', s, editModel)).toBeNull();
+  });
+
+  it('summarises style and edits honestly', () => {
+    const s = { image: imageDefaults(), video: videoDefaults() };
+    s.image.style = 'iphone';
+    s.image.reference_image = 'a';
+    s.image.extra_references = ['b'];
+    const sum = summaryFor('image', s, editModel);
+    expect(sum[0]).toBe('iPhone / candid photo');
+    expect(sum.at(-1)).toBe('edit · 2 images');
   });
 });

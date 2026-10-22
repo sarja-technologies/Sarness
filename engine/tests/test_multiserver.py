@@ -244,6 +244,40 @@ def test_registry_new_families_and_nested_mtp(tmp_path):
     assert not any("00002-of" in i for i in items), "later shards are not listed as models"
 
 
+def test_registry_tells_fine_tunes_with_the_base_file_names_apart(tmp_path):
+    from sarness_engine.models.registry import ModelRegistry
+
+    cfg = load_config(tmp_path / "data")
+    cfg.ensure_dirs()
+    llm = cfg.models_dir / "llm"
+    shard = "Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf"
+    _gguf(llm / "unsloth--Qwen3.8-Flash-Next-GGUF" / "UD-IQ4_XS" / shard)
+    _gguf(llm / "huihui-ai--Huihui-Qwen3.8-Flash-Next-abliterated-v2-GGUF" / "unsloth-UD-IQ4_XS" / shard)
+    # mradermacher names projectors "<model>.mmproj-f16.gguf"; unsloth keeps the MTP head in MTP/.
+    mr = llm / "mradermacher--Huihui-Qwen3.5-27B-abliterated-GGUF"
+    _gguf(mr / "Huihui-Qwen3.5-27B-abliterated.Q6_K.gguf")
+    (mr / "Huihui-Qwen3.5-27B-abliterated.mmproj-f16.gguf").write_bytes(b"GGUF")
+    q = llm / "unsloth--Qwen3.8-27B-GGUF"
+    _gguf(q / "Qwen3.8-27B-UD-Q6_K.gguf")
+    (q / "mmproj-F16.gguf").write_bytes(b"GGUF")
+    (q / "MTP").mkdir()
+    (q / "MTP" / "mtp-Qwen3.8-27B-Q4_0.gguf").write_bytes(b"GGUF")
+    img = cfg.models_dir / "image" / "Tongyi-MAI--Z-Image-Turbo"
+    img.mkdir(parents=True)
+    (img / "model_index.json").write_text('{"_class_name": "ZImagePipeline"}')
+    items = {i["id"]: i for i in ModelRegistry(Database(cfg.db_path), cfg.models_dir).scan()}
+    assert "qwen3.8-flash-next@UD-IQ4_XS" in items
+    abl = items["huihui-qwen3.8-flash-next-abliterated@UD-IQ4_XS"]
+    assert "huihui" in abl["path"] and abl["llama_args"] == ["-lzm", "on"]
+    q35 = items["huihui-qwen3.5-27b-abliterated@Q6_K"]
+    assert q35["meta"]["mmproj"].endswith(".mmproj-f16.gguf") and q35["capabilities"]["vision"]
+    assert not any("mmproj" in i for i in items), "projectors are never listed as models"
+    q38 = items["qwen3.8-27b@UD-Q6_K"]
+    assert q38["meta"]["mtp"].endswith("MTP/mtp-Qwen3.8-27B-Q4_0.gguf")
+    z = items["z-image-turbo"]
+    assert z["family"] == "zimage" and z["supported"] and z["capabilities"]["negative_prompt"] is False
+
+
 class _Ctx:
     def __init__(self):
         self.notes, self.steps = {}, []
@@ -287,8 +321,8 @@ def test_native_image_family_runs_end_to_end():
     assert call["true_cfg_scale"] == 4.0 and call["negative_prompt"] == " "
     imgs = d.vae_decode(ctx, {"model": h, "latent": out}, {"tiled": False})["image"]
     assert len(imgs) == 2 and imgs[0].size == (992, 752)
-    with pytest.raises(WorkflowError, match="text-to-image only"):
-        d.image_sampler(ctx, {"model": h, "conditioning": cond, "latent": {**lat, "samples": object()}}, params)
+    with pytest.raises(WorkflowError, match="does not support image-to-image"):
+        d.image_sampler(ctx, {"model": h, "conditioning": cond, "latent": {**lat, "source": [object()]}}, params)
     params["guidance"] = 1.0
     d.image_sampler(ctx, {"model": h, "conditioning": cond, "latent": lat}, params)
     assert "true_cfg_scale" not in pipe.calls[-1]
@@ -348,6 +382,28 @@ def test_audio_is_muxed_into_mp4(tmp_path):
                            capture_output=True, text=True).stderr
     assert "Audio: aac" in probe and "Video: h264" in probe
     assert not list(tmp_path.glob("*.wav")) and not list(tmp_path.glob("*.muxed.*"))
+
+
+def test_a_soundtrack_never_cuts_frames_off_the_clip(tmp_path):
+    pytest.importorskip("imageio_ffmpeg")
+
+    import imageio.v2 as iio
+    import imageio_ffmpeg
+    import numpy as np
+
+    from sarness_engine.workflow.nodes.output import _mux_audio
+
+    # LTX-2 returns 121 frames at 24 fps (5.04 s) with a 5.01 s soundtrack; ffmpeg's -shortest dropped 4 frames.
+    for secs in (5.01, 5.3):
+        path = tmp_path / f"clip{secs}.mp4"
+        w = iio.get_writer(str(path), format="FFMPEG", fps=24, codec="libx264", macro_block_size=1,
+                           ffmpeg_params=["-pix_fmt", "yuv420p"])
+        for i in range(121):
+            w.append_data(np.full((64, 64, 3), i * 2, dtype=np.uint8))
+        w.close()
+        audio = np.zeros((2, int(secs * 24000)), dtype=np.float32)
+        assert _mux_audio(path, {"samples": audio, "rate": 24000}, "mp4", 121 / 24)
+        assert imageio_ffmpeg.count_frames_and_secs(str(path))[0] == 121, secs
 
 
 def test_downloads_resume_after_restart_oldest_first(tmp_path):
@@ -481,6 +537,30 @@ def test_llama_reads_model_up_front_on_unified_memory(tmp_path, monkeypatch):
     llama.no_mmap_args.cache_clear()
 
 
+def test_llama_drafts_with_a_separate_or_an_embedded_mtp_head(tmp_path, monkeypatch):
+    seen = {}
+
+    class Stop(Exception):
+        pass
+
+    def fake_popen(args, **kw):
+        seen["args"] = args
+        raise Stop
+
+    monkeypatch.setattr(llama.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(llama, "gpus", lambda: [{"unified_memory": False}])
+    srv = llama.LlamaServer.__new__(llama.LlamaServer)
+    for meta, expect in [({"mtp": "/m/mtp-x.gguf"}, ["--spec-type", "draft-mtp", "-md", "/m/mtp-x.gguf"]),
+                         ({"nextn_layers": 1}, ["--spec-type", "draft-mtp"]), ({"nextn_layers": 0}, []), ({}, [])]:
+        srv.__init__(SimpleNamespace(binary=lambda: "/bin/x", version=lambda: "x", env=lambda: {}), tmp_path)
+        with pytest.raises(Stop):
+            srv.load({"id": "m", "path": str(tmp_path / "m.gguf"), "meta": meta}, ctx=4096, gpu_layers=999,
+                     flash_attn=True)
+        args = seen["args"]
+        assert [a for a in args if a in ("--spec-type", "draft-mtp", "-md") or a.startswith("/m/")] == expect, meta
+        assert ("--spec-draft-n-max" in args) == bool(expect)
+
+
 def test_stopping_the_gpu_worker_survives_the_reader_seeing_it_exit():
     """llm/load stopped the idle diffusion worker; the reader thread cleared the process as soon as the
     worker exited, while stop() was still waiting for it (AttributeError: 'NoneType' ... 'is_alive')."""
@@ -504,3 +584,82 @@ def test_stopping_the_gpu_worker_survives_the_reader_seeing_it_exit():
     sup._proc, sup._conn = Proc(), SimpleNamespace(send=lambda msg: None)
     sup.stop()
     assert sup._proc is None and not sup.alive
+
+
+def test_any_loaded_model_can_be_unloaded_from_the_models_list(client):
+    """Image/video models held by the GPU worker get the same Unload as the chat model."""
+    st = client.app.state.sarness
+    mid = next(m["id"] for m in client.get("/v1/models").json() if m["category"] == "image")
+    released = []
+
+    class Sup:
+        busy = True
+        last_status = {"loaded": [{"key": f"image:{mid}", "vram_mb": 9000}, {"key": "video:other", "vram_mb": 1}]}
+
+        def release(self, key=None, wait=0.0):
+            released.append((key, wait))
+            self.last_status = {"loaded": [m for m in self.last_status["loaded"] if m["key"] != key]}
+
+        def stop(self):
+            pass
+
+    st.jobs.supervisor = sup = Sup()
+    assert next(m for m in client.get("/v1/models").json() if m["id"] == mid)["loaded"]
+    r = client.post(f"/v1/models/{mid}/unload")
+    assert r.status_code == 409 and "job is running" in r.json()["detail"] and not released
+    sup.busy = False
+    assert client.post(f"/v1/models/{mid}/unload").json() == {"ok": True}
+    assert released == [(f"image:{mid}", 60.0)], "only that model is released, and the call waits for it"
+    assert not next(m for m in client.get("/v1/models").json() if m["id"] == mid)["loaded"]
+    assert sup.last_status["loaded"] == [{"key": "video:other", "vram_mb": 1}]
+    assert client.post("/v1/models/not-loaded/unload").json() == {"ok": True}, "unloading is idempotent"
+
+
+def test_a_job_whose_worker_was_killed_for_memory_fails_instead_of_retrying(client):
+    jobs = client.app.state.sarness.jobs
+    ids = [jobs.submit(kind="image", simple={"model": "image:my-sdxl", "prompt": p})["id"]
+           for p in ("a", "b")]
+    jobs._on_worker_crash(ids[0], "GPU worker exited unexpectedly (exit code 1)", True)
+    jobs._on_worker_crash(ids[1], "The GPU worker was stopped by the system for running out of memory.", False)
+    first, second = (client.get(f"/v1/jobs/{i}").json() for i in ids)
+    assert first["status"] == "queued" and first["attempts"] == 1, "an ordinary crash is retried"
+    assert second["status"] == "failed" and "out of memory" in second["error"]["message"], \
+        "running the same job again would only exhaust memory again"
+
+
+def test_an_out_of_memory_job_is_retried_with_offload_only_where_offloading_saves_memory(client, monkeypatch):
+    from sarness_engine import hardware
+
+    jobs = client.app.state.sarness.jobs
+    for unified, status in ((False, "queued"), (True, "failed")):
+        monkeypatch.setattr(hardware, "gpus", lambda: [{"name": "GPU", "unified_memory": unified, "vram_total_mb": 24576,
+                                                         "vram_free_mb": 24576, "vram_used_mb": 0}])
+        job_id = jobs.submit(kind="image", simple={"model": "image:my-sdxl", "prompt": "a"})["id"]
+        jobs._handle_failure(job_id, {"type": "failed", "message": "The GPU ran out of memory.", "oom": True})
+        assert client.get(f"/v1/jobs/{job_id}").json()["status"] == status, f"unified={unified}"
+
+
+def test_the_supervisor_stops_the_worker_before_the_machine_runs_out_of_memory(monkeypatch):
+    import psutil
+
+    from sarness_engine.jobs import supervisor as sv
+
+    avail = iter([20_000, 9_000, 3_000])
+    monkeypatch.setattr(psutil, "virtual_memory", lambda: SimpleNamespace(total=128 * 2**30,
+                                                                          available=next(avail) * 2**20))
+
+    class Proc:
+        killed = False
+
+        def is_alive(self):
+            return not self.killed
+
+        def kill(self):
+            self.killed = True
+
+    proc = Proc()
+    sup = sv.WorkerSupervisor({}, lambda m: None, lambda *a: None)
+    sup._guard_memory(proc, interval=0)
+    assert proc.killed, "3 GB left is below the 3 % floor (3.8 GB of 128 GB)"
+    monkeypatch.setattr(psutil, "virtual_memory", lambda: SimpleNamespace(total=32 * 2**30, available=0))
+    assert sv.memory_floor_mb() == 4096

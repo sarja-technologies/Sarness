@@ -67,8 +67,20 @@ Behaviour specific to unified memory:
   them in page by page on one core. Diffusers loads use `disable_mmap` (text encoders are loaded separately because
   diffusers does not forward it to transformers models); llama-server gets `--load-mode dio` (or `none` / `--no-mmap`
   on builds that only have those). Measured: a 14 GB Qwen-Image transformer 79 s → 7 s; gpt-oss-120b 31–66 s → 9 s.
+* **Page cache.** CUDA on GB10 allocates only from *free* memory and does not reclaim the page cache. Reading a 55 GB
+  model leaves ~55 GB of cached file pages, so the next allocation can fail while `MemAvailable` still shows 60 GB.
+  After every load the model's files (and LoRA files) are evicted from the page cache with `posix_fadvise(DONTNEED)`.
 * **Eviction.** Cached models are evicted before a load, and evicted weights are dropped rather than copied to the CPU
-  (which would land in the same RAM).
+  (which would land in the same RAM). Cached node outputs are cleared on every eviction, so a later job always reloads
+  an evicted model instead of reusing its emptied handle.
+* **No offloading.** CPU offload keeps a second copy in the same RAM; any requested offload mode is placed on the GPU.
+  For the same reason a job that runs out of memory is not retried with offloading (as it is on discrete GPUs).
+* **Memory safety.** GPU allocations are in no process's RSS and are not charged to cgroups, so the kernel's OOM
+  killer cannot see the culprit and kills desktop and system services first (this happened during testing on
+  2026-10-22). Three layers prevent it: the worker caps PyTorch at what it holds plus what the system can spare
+  (an oversized job fails with an ordinary out-of-memory error); the supervisor stops the worker when available
+  memory falls below 3 % of RAM (4–8 GiB) and fails the job without retrying it; and the systemd unit sets
+  `MemoryMax` (RAM minus max(8 GiB, 10 %)) with `OOMPolicy=continue` for ordinary RAM.
 * **Large video models.** Wan 2.2 A14B stores each of its two 57 GB experts in FP8 after loading (computed in bf16).
   MiniMax H3 uses a pre-quantized FP8 transformer and an FP8, 50-layer text encoder (see MODELS.md).
 

@@ -75,13 +75,16 @@ def worker_main(conn, options: dict[str, Any]) -> None:  # pragma: no cover - ex
 
     from ..workflow.executor import NodeCache, execute
     from ..workflow.types import Cancelled, WorkflowError
-    from .models import ModelManager, cuda_available, free_vram_mb, total_vram_mb
+    from .models import ModelManager, apply_memory_budget, cuda_available, free_vram_mb, total_vram_mb
 
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
     models = ModelManager(headroom_mb=int(options.get("headroom_mb", 600)))
     services = _Services(models, Path(options["outputs_dir"]))
     cache = NodeCache()
+    # Cached node outputs hold model handles: once a model is evicted (also to make room for another) its
+    # weights are gone, so a cached handle must never be reused.
+    models.on_evict.append(lambda key: cache.clear())
     jobs: queue.Queue = queue.Queue()
     cancel_events: dict[str, threading.Event] = {}
     stop = threading.Event()
@@ -109,7 +112,7 @@ def worker_main(conn, options: dict[str, Any]) -> None:  # pragma: no cover - ex
                 if ev:
                     ev.set()
             elif t == "release":
-                jobs.put({"type": "release"})
+                jobs.put({"type": "release", "key": msg.get("key")})
             elif t == "status":
                 send(status())
             elif t == "shutdown":
@@ -128,8 +131,11 @@ def worker_main(conn, options: dict[str, Any]) -> None:  # pragma: no cover - ex
         if msg is None:
             break
         if msg.get("type") == "release":
-            models.unload_all()
-            cache.clear()
+            if msg.get("key"):
+                models.evict(msg["key"])
+            else:
+                models.unload_all()
+            cache.clear()  # cached node outputs can hold the released model's tensors
             send(status())
             continue
         job_id = msg["job_id"]
@@ -138,6 +144,9 @@ def worker_main(conn, options: dict[str, Any]) -> None:  # pragma: no cover - ex
         t0 = time.perf_counter()
         if cuda_available():
             torch.cuda.reset_peak_memory_stats()
+            budget = apply_memory_budget()
+            if budget is not None:
+                log.info("job %s: memory budget %d MiB", job_id, budget)
 
         def emit(event: dict[str, Any]) -> None:
             send(event)

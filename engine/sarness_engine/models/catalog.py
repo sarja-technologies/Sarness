@@ -12,7 +12,8 @@ from typing import Any
 
 # Families map to runtime adapters:
 #   llama.cpp:  "gguf"
-#   diffusers:  "sdxl", "sd15", "wan", "wan22-ti2v", "qwenimage21", "ltx2"
+#   diffusers:  "sdxl", "sd15", "wan", "wan22-ti2v", "qwenimage21", "qwenimage", "qwenimage-edit", "zimage",
+#               "flux2klein", "flux2", "ltx2", "hunyuanvideo15", "hunyuanvideo15-i2v"
 #   spandrel:   "esrgan"
 #   diffusers controlnet/lora add-ons: "controlnet-sdxl", "lora-sdxl"
 
@@ -31,6 +32,24 @@ SDXL_CAPS = {
     "negative_prompt": True,
     "schedulers": ["euler_a", "euler", "dpmpp_2m", "dpmpp_2m_karras", "dpmpp_sde_karras", "ddim", "unipc", "lcm", "heun"],
 }
+
+# Image families whose diffusers pipelines run end to end. "edit" takes the reference image(s) as conditioning
+# (the output is a new image guided by them) instead of starting from them as image-to-image does;
+# "references" is how many images an edit accepts.
+NATIVE_IMAGE_CAPS: dict[str, dict[str, Any]] = {
+    "qwenimage": {"modes": ["txt2img", "img2img", "inpaint"], "lora": True, "controlnet": False,
+                  "negative_prompt": True, "schedulers": []},
+    "qwenimage-edit": {"modes": ["edit"], "references": 3, "denoise": False, "lora": True, "controlnet": False,
+                       "negative_prompt": True, "schedulers": []},
+    "zimage": {"modes": ["txt2img", "img2img", "inpaint"], "lora": True, "controlnet": False,
+               "negative_prompt": True, "schedulers": []},
+    "flux2klein": {"modes": ["txt2img", "edit", "inpaint"], "references": 4, "lora": True, "controlnet": False,
+                   "negative_prompt": False, "schedulers": []},
+    "flux2": {"modes": ["txt2img", "edit"], "references": 4, "denoise": False, "lora": True, "controlnet": False,
+              "negative_prompt": False, "schedulers": []},
+}
+
+DIFFUSERS_FILES = ["model_index.json", "scheduler/*", "text_encoder/*", "tokenizer/*", "transformer/*", "vae/*"]
 
 CATALOG: list[dict[str, Any]] = [
     # ------------------------------------------------- large-memory LLMs (DGX Spark class)
@@ -99,6 +118,120 @@ CATALOG: list[dict[str, Any]] = [
         "capabilities": {"vision": True, "context_max": 262144, "default_ctx": 32768},
         "license": "Apache-2.0",
         "tags": ["vision", "fast"],
+    },
+    # ----------------------------------------------- steerable / low-refusal LLMs (27B class and up)
+    # Community fine-tunes with refusals removed ("abliterated") or trained out. They follow the user's system
+    # prompt instead of the original vendor policy; capability can drop slightly, which docs/MODELS.md measures
+    # against the original Qwen3.8 27B.
+    {
+        "id": "qwen3.8-27b",
+        "name": "Qwen3.8 27B (vision)",
+        "category": "llm", "family": "gguf", "format": "gguf",
+        "repo": "unsloth/Qwen3.8-27B-GGUF",
+        "description": "Dense 27B reasoning model with image understanding: the original that the abliterated "
+                       "27B models below are derived from. Multi-token prediction head included.",
+        "quantizations": [
+            {"id": "UD-Q6_K", "files": ["Qwen3.8-27B-UD-Q6_K.gguf", "mmproj-F16.gguf", "MTP/mtp-Qwen3.8-27B-Q4_0.gguf"],
+             "size_gb": 24.3, "vram_mb": 34000, "default": True},
+        ],
+        "mmproj_prefix": "mmproj-",
+        "capabilities": {"vision": True, "reasoning": True, "context_max": 262144, "default_ctx": 32768},
+        "license": "Apache-2.0",
+        "tags": ["27b", "reasoning", "vision"],
+    },
+    {
+        "id": "huihui-qwen3.8-27b-abliterated",
+        "name": "Qwen3.8 27B Abliterated (Huihui, vision)",
+        "category": "llm", "family": "gguf", "format": "gguf",
+        "repo": "huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF",
+        "description": "Qwen3.8 27B with its refusal direction removed (abliteration): answers what the original "
+                       "declines, keeps vision and thinking mode.",
+        "quantizations": [
+            {"id": "Q6_K", "files": ["Huihui-Qwen3.8-27B-abliterated-Q6_K.gguf", "mmproj-model-bf16.gguf"],
+             "size_gb": 23.4, "vram_mb": 33000, "default": True},
+        ],
+        "mmproj_prefix": "mmproj-",
+        "capabilities": {"vision": True, "reasoning": True, "context_max": 262144, "default_ctx": 32768},
+        "license": "Apache-2.0 (community fine-tune)",
+        "tags": ["27b", "uncensored", "reasoning", "vision"],
+    },
+    {
+        "id": "qwen3.8-27b-uncensored-hauhaucs",
+        "name": "Qwen3.8 27B Uncensored (HauhauCS Aggressive, vision)",
+        "category": "llm", "family": "gguf", "format": "gguf",
+        "repo": "HauhauCS/Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-MTP-GGUF",
+        "description": "Qwen3.8 27B tuned for minimal refusals (aggressive variant), with vision.",
+        "quantizations": [
+            {"id": "Q6_K_P", "files": ["Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-Q6_K_P.gguf",
+                                       "mmproj-Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-BF16.gguf"],
+             "size_gb": 26.9, "vram_mb": 36000, "default": True},
+        ],
+        "mmproj_prefix": "mmproj-",
+        "capabilities": {"vision": True, "reasoning": True, "context_max": 262144, "default_ctx": 32768},
+        "license": "Apache-2.0 (community fine-tune)",
+        "tags": ["27b", "uncensored", "reasoning", "vision"],
+    },
+    {
+        "id": "huihui-qwen3.5-27b-abliterated",
+        "name": "Qwen3.5 27B Abliterated (Huihui, vision)",
+        "category": "llm", "family": "gguf", "format": "gguf",
+        "repo": "mradermacher/Huihui-Qwen3.5-27B-abliterated-GGUF",
+        "description": "Previous-generation Qwen 27B with refusals removed; a second, independently abliterated 27B.",
+        "quantizations": [
+            {"id": "Q6_K", "files": ["Huihui-Qwen3.5-27B-abliterated.Q6_K.gguf",
+                                     "Huihui-Qwen3.5-27B-abliterated.mmproj-f16.gguf"],
+             "size_gb": 23.0, "vram_mb": 32000, "default": True},
+        ],
+        "capabilities": {"vision": True, "reasoning": True, "context_max": 262144, "default_ctx": 32768},
+        "license": "Apache-2.0 (community fine-tune)",
+        "tags": ["27b", "uncensored", "reasoning", "vision"],
+    },
+    {
+        "id": "dolphin3.0-r1-mistral-24b",
+        "name": "Dolphin 3.0 R1 Mistral 24B",
+        "category": "llm", "family": "gguf", "format": "gguf",
+        "repo": "bartowski/cognitivecomputations_Dolphin3.0-R1-Mistral-24B-GGUF",
+        "description": "Cognitive Computations' uncensored general model with R1-style reasoning; steered entirely by "
+                       "its system prompt.",
+        "quantizations": [
+            {"id": "Q6_K", "files": ["cognitivecomputations_Dolphin3.0-R1-Mistral-24B-Q6_K.gguf"],
+             "size_gb": 19.3, "vram_mb": 25000, "default": True},
+        ],
+        "capabilities": {"vision": False, "reasoning": True, "context_max": 32768, "default_ctx": 32768},
+        "license": "Apache-2.0",
+        "tags": ["24b", "uncensored", "reasoning"],
+    },
+    {
+        "id": "hermes-4-70b",
+        "name": "Hermes 4 70B",
+        "category": "llm", "family": "gguf", "format": "gguf",
+        "repo": "unsloth/Hermes-4-70B-GGUF",
+        "description": "Nous Research's steerable Llama 3.1 70B with hybrid reasoning and few refusals. Dense, so "
+                       "slower than the mixture-of-experts models on a DGX Spark.",
+        "quantizations": [
+            {"id": "Q4_K_M", "files": ["Hermes-4-70B-Q4_K_M.gguf"], "size_gb": 42.5, "vram_mb": 56000, "default": True},
+        ],
+        "capabilities": {"vision": False, "reasoning": True, "context_max": 131072, "default_ctx": 32768},
+        "license": "Llama 3 Community License",
+        "tags": ["large", "uncensored", "reasoning", "128gb"],
+    },
+    {
+        "id": "huihui-qwen3.8-flash-next-abliterated",
+        "name": "Qwen3.8 Flash Next Abliterated v2 (125B-A6B)",
+        "category": "llm", "family": "gguf", "format": "gguf",
+        "repo": "huihui-ai/Huihui-Qwen3.8-Flash-Next-abliterated-v2-GGUF",
+        "description": "Flash Next with refusals removed: the largest low-refusal model that fits one DGX Spark. "
+                       "Uses most of a 128 GB machine, like Flash Next.",
+        "quantizations": [
+            {"id": "UD-IQ4_XS", "files": ["unsloth-UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
+                                          "unsloth-UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00003.gguf",
+                                          "unsloth-UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00003-of-00003.gguf"],
+             "size_gb": 93.7, "vram_mb": 106000, "default": True},
+        ],
+        "llama_args": ["-lzm", "on"],
+        "capabilities": {"vision": False, "reasoning": True, "context_max": 262144, "default_ctx": 32768},
+        "license": "Qwen Community License 1.0 (community fine-tune)",
+        "tags": ["large", "uncensored", "reasoning", "128gb"],
     },
     # ------------------------------------------------------------------ LLM
     {
@@ -170,6 +303,70 @@ CATALOG: list[dict[str, Any]] = [
                          "schedulers": []},
         "license": "Qwen Research License (non-commercial)",
         "tags": ["128gb", "text-rendering"],
+    },
+    {
+        "id": "qwen-image-2512",
+        "name": "Qwen-Image-2512",
+        "category": "image", "family": "qwenimage", "format": "diffusers",
+        "repo": "Qwen/Qwen-Image-2512",
+        "files": DIFFUSERS_FILES,
+        "size_gb": 57.7,
+        "vram_mb": 62000, "vram_offload_mb": 62000,
+        "description": "Qwen's December 2025 image model, tuned for natural human realism, finer textures and text. "
+                       "Text-to-image, image-to-image and inpainting. Needs ~60 GB.",
+        "defaults": {"steps": 50, "guidance": 4.0, "width": 1328, "height": 1328},
+        "limits": {"steps": [4, 80], "guidance": [1, 10], "min_side": 512, "max_side": 2048, "multiple": 16},
+        "capabilities": NATIVE_IMAGE_CAPS["qwenimage"],
+        "license": "Apache-2.0",
+        "tags": ["128gb", "photoreal", "text-rendering"],
+    },
+    {
+        "id": "qwen-image-edit-2511",
+        "name": "Qwen-Image-Edit-2511",
+        "category": "image", "family": "qwenimage-edit", "format": "diffusers",
+        "repo": "Qwen/Qwen-Image-Edit-2511",
+        "files": [*DIFFUSERS_FILES, "processor/*"],
+        "size_gb": 57.7,
+        "vram_mb": 62000, "vram_offload_mb": 62000,
+        "description": "Instruction image editing with up to three reference images: change, add or remove things, "
+                       "keep a person's identity, restyle. Shares Qwen-Image-2512's text encoder and VAE on disk.",
+        "defaults": {"steps": 40, "guidance": 4.0, "width": 1024, "height": 1024},
+        "limits": {"steps": [4, 80], "guidance": [1, 10], "min_side": 512, "max_side": 2048, "multiple": 16},
+        "capabilities": NATIVE_IMAGE_CAPS["qwenimage-edit"],
+        "license": "Apache-2.0",
+        "tags": ["128gb", "edit"],
+    },
+    {
+        "id": "z-image-turbo",
+        "name": "Z-Image-Turbo",
+        "category": "image", "family": "zimage", "format": "diffusers",
+        "repo": "Tongyi-MAI/Z-Image-Turbo",
+        "files": DIFFUSERS_FILES,
+        "size_gb": 32.8,
+        "vram_mb": 32000, "vram_offload_mb": 32000,
+        "description": "Fast photorealistic 6B model from Tongyi: 8-step distilled, strong at people and everyday "
+                       "scenes. Text-to-image, image-to-image and inpainting.",
+        "defaults": {"steps": 9, "guidance": 0.0, "width": 1024, "height": 1024},
+        "limits": {"steps": [4, 20], "guidance": [0, 3], "min_side": 512, "max_side": 2048, "multiple": 16},
+        "capabilities": {**NATIVE_IMAGE_CAPS["zimage"], "negative_prompt": False},
+        "license": "Apache-2.0",
+        "tags": ["photoreal", "fast"],
+    },
+    {
+        "id": "flux2-klein-4b",
+        "name": "FLUX.2 [klein] 4B",
+        "category": "image", "family": "flux2klein", "format": "diffusers",
+        "repo": "black-forest-labs/FLUX.2-klein-4B",
+        "files": DIFFUSERS_FILES,
+        "size_gb": 16.0,
+        "vram_mb": 20000, "vram_offload_mb": 20000,
+        "description": "Black Forest Labs' compact FLUX.2: 4-step generation and multi-reference editing in one model. "
+                       "The fastest model here.",
+        "defaults": {"steps": 4, "guidance": 1.0, "width": 1024, "height": 1024},
+        "limits": {"steps": [1, 12], "guidance": [0, 5], "min_side": 256, "max_side": 2048, "multiple": 16},
+        "capabilities": NATIVE_IMAGE_CAPS["flux2klein"],
+        "license": "Apache-2.0",
+        "tags": ["fast", "edit"],
     },
     {
         "id": "sdxl-turbo",
@@ -295,6 +492,43 @@ CATALOG: list[dict[str, Any]] = [
         "capabilities": {"modes": ["i2v"], "negative_prompt": True, "start_frame": True, "end_frame": False,
                          "motion": [], "lora": False},
         "license": "Apache-2.0",
+        "tags": ["128gb", "realistic"],
+    },
+    {
+        "id": "hunyuanvideo-1.5-t2v",
+        "name": "HunyuanVideo 1.5 T2V 720p",
+        "category": "video", "family": "hunyuanvideo15", "format": "diffusers",
+        "repo": "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-720p_t2v",
+        "files": [*DIFFUSERS_FILES, "text_encoder_2/*", "tokenizer_2/*", "guider/*"],
+        "size_gb": 53.4,
+        "vram_mb": 60000, "vram_offload_mb": 60000,
+        "description": "Tencent's 8.3B video model: realistic motion and faces at 720p, 24 fps. Needs a large-memory "
+                       "server (DGX Spark).",
+        "defaults": {"steps": 50, "guidance": 6.0, "width": 1280, "height": 720, "frames": 121, "fps": 24},
+        "limits": {"steps": [4, 60], "guidance": [1, 10], "frames": [5, 241], "frame_step": 4, "fps": [12, 30],
+                   "resolutions": [[1280, 720], [720, 1280], [848, 480], [480, 848]], "multiple": 16},
+        "capabilities": {"modes": ["t2v"], "negative_prompt": True, "start_frame": False, "end_frame": False,
+                         "motion": [], "lora": False},
+        "license": "Tencent Hunyuan Community License",
+        "tags": ["128gb", "realistic"],
+    },
+    {
+        "id": "hunyuanvideo-1.5-i2v",
+        "name": "HunyuanVideo 1.5 I2V 720p",
+        "category": "video", "family": "hunyuanvideo15-i2v", "format": "diffusers",
+        "repo": "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-720p_i2v",
+        "files": [*DIFFUSERS_FILES, "text_encoder_2/*", "tokenizer_2/*", "guider/*", "image_encoder/*",
+                  "feature_extractor/*"],
+        "size_gb": 55.3,
+        "vram_mb": 60000, "vram_offload_mb": 60000,
+        "description": "Image-to-video companion of HunyuanVideo 1.5 T2V: animates a start frame at 720p, 24 fps. "
+                       "Shares the T2V text encoders on disk.",
+        "defaults": {"steps": 50, "guidance": 6.0, "width": 1280, "height": 720, "frames": 121, "fps": 24},
+        "limits": {"steps": [4, 60], "guidance": [1, 10], "frames": [5, 241], "frame_step": 4, "fps": [12, 30],
+                   "resolutions": [[1280, 720], [720, 1280], [848, 480], [480, 848]], "multiple": 16},
+        "capabilities": {"modes": ["i2v"], "negative_prompt": True, "start_frame": True, "end_frame": False,
+                         "motion": [], "lora": False},
+        "license": "Tencent Hunyuan Community License",
         "tags": ["128gb", "realistic"],
     },
     {

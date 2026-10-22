@@ -214,6 +214,11 @@ def _is_oom(exc: BaseException) -> bool:
 
 def _friendly(exc: BaseException) -> str:
     if _is_oom(exc):
+        from ..runtime.models import unified_memory
+
+        if unified_memory():
+            return ("The GPU ran out of memory. Try a smaller resolution, fewer frames or a smaller batch, "
+                    "or unload other models.")
         return ("The GPU ran out of memory. Try a smaller resolution, fewer frames, a smaller batch, "
                 "or switch the memory mode to 'Offload'.")
     msg = str(exc).strip() or type(exc).__name__

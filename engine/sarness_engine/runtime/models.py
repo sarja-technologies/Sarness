@@ -15,6 +15,7 @@ from __future__ import annotations
 import gc
 import json
 import logging
+import os
 import re
 import time
 from collections import OrderedDict
@@ -94,6 +95,40 @@ def free_vram_mb() -> int:
     return free // (1024 * 1024)
 
 
+def drop_file_cache(path: str | Path) -> None:
+    """Evicts a loaded model's files from the page cache. On unified memory (GB10) CUDA allocations count only
+    free memory and do not reclaim the page cache, so the cached copy of the files a model was just read from
+    (as large as the model) otherwise leaves later allocations failing with most memory merely "available"."""
+    p = Path(path)
+    for f in ([p] if p.is_file() else (x for x in p.rglob("*") if x.is_file())):
+        try:
+            fd = os.open(f, os.O_RDONLY)
+        except OSError:
+            continue
+        try:
+            os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+        except (OSError, AttributeError):
+            pass
+        finally:
+            os.close(fd)
+
+
+def apply_memory_budget() -> int | None:
+    """On unified memory, caps this process's PyTorch allocations at what it holds plus what the system can still
+    spare, keeping a margin above the supervisor's hard floor: an oversized job then raises a CUDA out-of-memory
+    error (handled like any OOM) instead of exhausting the machine. Returns the budget in MiB."""
+    if not cuda_available() or not unified_memory():
+        return None
+    import psutil
+
+    from ..jobs.supervisor import memory_floor_mb
+
+    total = torch.cuda.mem_get_info()[1]
+    budget = torch.cuda.memory_reserved() + psutil.virtual_memory().available - (memory_floor_mb() + 4096) * 2**20
+    torch.cuda.set_per_process_memory_fraction(min(1.0, max(0.05, budget / total)))
+    return budget // 2**20
+
+
 def total_vram_mb() -> int:
     if not cuda_available():
         return 0
@@ -148,7 +183,12 @@ def load_pipeline(cls: Any, path: str | Path, dtype: torch.dtype, **kwargs: Any)
 
 # Families whose diffusers pipeline is called end to end (prompt → images/frames) instead of
 # through Sarness' encode / sample / decode nodes.
-NATIVE_PIPELINES = {"qwenimage21": "QwenImage21Pipeline", "ltx2": "LTX2Pipeline"}
+NATIVE_PIPELINES = {
+    "qwenimage21": "QwenImage21Pipeline", "qwenimage": "QwenImagePipeline", "qwenimage-edit": "QwenImageEditPlusPipeline",
+    "zimage": "ZImagePipeline", "flux2klein": "Flux2KleinPipeline", "flux2": "Flux2Pipeline",
+    "ltx2": "LTX2Pipeline", "hunyuanvideo15": "HunyuanVideo15Pipeline",
+    "hunyuanvideo15-i2v": "HunyuanVideo15ImageToVideoPipeline",
+}
 
 
 def _has(path: Path, pattern: str) -> bool:
@@ -159,6 +199,8 @@ class ModelManager:
     def __init__(self, headroom_mb: int = 600):
         self._cache: OrderedDict[str, _Loaded] = OrderedDict()
         self.headroom_mb = headroom_mb
+        # Called with the key of every evicted model, whatever the reason (making room, release, shutdown).
+        self.on_evict: list[Any] = []
 
     # ---------------------------------------------------------------- status
     def status(self) -> list[dict[str, Any]]:
@@ -177,11 +219,18 @@ class ModelManager:
             return item.obj
         return None
 
+    def _store(self, key: str, item: _Loaded, path: str | None) -> None:
+        self._cache[key] = item
+        if path and unified_memory():
+            drop_file_cache(path)
+
     def evict(self, key: str) -> None:
         item = self._cache.pop(key, None)
         if item is None:
             return
         log.info("unloading %s", key)
+        for hook in self.on_evict:
+            hook(key)
         obj = item.obj[0] if isinstance(item.obj, tuple) else item.obj
         # Move weights off the GPU explicitly: this frees VRAM even if stray
         # references (caches, tracebacks) keep the Python objects alive. With unified memory a copy to
@@ -229,11 +278,17 @@ class ModelManager:
         are evicted first; otherwise the load itself could exhaust memory."""
         if unified_memory():
             self.make_room(need_mb, keep={key})
+            # Before the load, while nothing transient is held (loading briefly holds extra copies, and a budget
+            # computed then would be far too small); a chat model may have grown since the job started.
+            apply_memory_budget()
 
     def _choose_mode(self, requested: str, need_gpu_mb: int, keep: set[str]) -> str:
         if not cuda_available():
             return "cpu"
-        if requested == "auto" and unified_memory():
+        if unified_memory():
+            # Offloading cannot save memory when the GPU uses system RAM: it keeps a CPU copy next to the
+            # working GPU copy and roughly doubles usage (measured: Qwen-Image retried "with offload" went from
+            # 55 GB to the edge of the machine's 121 GB). Requested offload modes are therefore placed on the GPU.
             self.make_room(need_gpu_mb, keep)
             return "gpu"
         if requested in ("gpu", "offload", "sequential"):
@@ -282,7 +337,8 @@ class ModelManager:
         mode = self._choose_mode(memory_mode, est, keep={key})
         self._place(pipe, mode)
         log.info("loaded %s (%s) in %.1fs, mode=%s", info["id"], family, time.perf_counter() - t0, mode)
-        self._cache[key] = _Loaded((pipe, mode), est if mode == "gpu" else int(info.get("vram_offload_mb") or est // 2), "image", mode)
+        vram = est if mode == "gpu" else int(info.get("vram_offload_mb") or est // 2)
+        self._store(key, _Loaded((pipe, mode), vram, "image", mode), info.get("path"))
         return ModelHandle(key, info["id"], family, info, pipe, mode)
 
     def vae(self, info: dict[str, Any]) -> Any:
@@ -297,7 +353,7 @@ class ModelManager:
         vae = (AutoencoderKL.from_single_file(str(path), dtype=dtype) if path.is_file()
                else AutoencoderKL.from_pretrained(str(path), dtype=dtype, **fast_load()))
         vae.to(device())
-        self._cache[key] = _Loaded(vae, int(info.get("vram_mb") or 400), "vae", "gpu")
+        self._store(key, _Loaded(vae, int(info.get("vram_mb") or 400), "vae", "gpu"), info.get("path"))
         return vae
 
     def controlnet(self, info: dict[str, Any]) -> Any:
@@ -312,7 +368,7 @@ class ModelManager:
         variant = "fp16" if _has(path, "*.fp16.safetensors") else None
         cn = ControlNetModel.from_pretrained(str(path), dtype=dtype, variant=variant, use_safetensors=True,
                                              **fast_load())
-        self._cache[key] = _Loaded(cn, int(info.get("vram_mb") or 2500), "controlnet", "lazy")
+        self._store(key, _Loaded(cn, int(info.get("vram_mb") or 2500), "controlnet", "lazy"), info.get("path"))
         return cn
 
     def upscaler(self, info: dict[str, Any]) -> Any:
@@ -334,7 +390,7 @@ class ModelManager:
             desc.to("cuda")
             if desc.supports_half:
                 desc.model.half()
-        self._cache[key] = _Loaded(desc, int(info.get("vram_mb") or 1000), "upscaler", "gpu")
+        self._store(key, _Loaded(desc, int(info.get("vram_mb") or 1000), "upscaler", "gpu"), info.get("path"))
         return desc
 
     # ----------------------------------------------------------- video models
@@ -406,7 +462,7 @@ class ModelManager:
                 else:  # sequential
                     _stream_module(pipe.transformer, "leaf_level")
         log.info("loaded %s in %.1fs, mode=%s (text encoder %d MiB)", info["id"], time.perf_counter() - t0, mode, te_bytes_mb)
-        self._cache[key] = _Loaded((pipe, mode), est, "video", mode)
+        self._store(key, _Loaded((pipe, mode), est, "video", mode), info.get("path"))
         return ModelHandle(key, info["id"], family, info, pipe, mode)
 
 
@@ -424,11 +480,11 @@ class ModelManager:
         t0 = time.perf_counter()
         pipe = load_minimax_h3(info["path"], device())
         log.info("loaded %s (minimaxh3) in %.1fs", info["id"], time.perf_counter() - t0)
-        self._cache[key] = _Loaded((pipe, "gpu"), est, "video", "gpu")
+        self._store(key, _Loaded((pipe, "gpu"), est, "video", "gpu"), info.get("path"))
         return ModelHandle(key, info["id"], "minimaxh3", info, pipe, "gpu")
 
     def _native_pipeline(self, kind: str, info: dict[str, Any], memory_mode: str) -> ModelHandle:
-        """Loads a pipeline that runs end to end (Qwen-Image 2.1, LTX-2) in bf16."""
+        """Loads a pipeline that runs end to end (Qwen-Image, Z-Image, FLUX.2, LTX-2, HunyuanVideo 1.5) in bf16."""
         import diffusers
 
         family = info["family"]
@@ -443,13 +499,19 @@ class ModelManager:
         pipe = load_pipeline(cls, info["path"], dtype)
         pipe.set_progress_bar_config(disable=True)
         pipe._sarness_default_scheduler = pipe.scheduler
+        if family.startswith("hunyuanvideo15"):
+            pipe.vae.enable_tiling()  # its 720p decode otherwise needs tens of GB at once
+            from .attention import pack_hunyuan_video15_attention
+
+            if not pack_hunyuan_video15_attention():
+                log.warning("HunyuanVideo 1.5 attention could not be packed; it runs with dense masks (slow)")
         self.make_room(est, keep={key})
         mode = self._choose_mode(memory_mode, est, keep={key})
         if mode == "split":
             mode = "offload"
         self._place(pipe, mode)
         log.info("loaded %s (%s) in %.1fs, mode=%s", info["id"], family, time.perf_counter() - t0, mode)
-        self._cache[key] = _Loaded((pipe, mode), est, kind, mode)
+        self._store(key, _Loaded((pipe, mode), est, kind, mode), info.get("path"))
         return ModelHandle(key, info["id"], family, info, pipe, mode)
 
 
@@ -491,6 +553,8 @@ def apply_loras(handle: ModelHandle) -> None:
                 pipe.load_lora_weights(str(p), weight_name=files[0].name, adapter_name=name)
             else:
                 pipe.load_lora_weights(str(p.parent), weight_name=p.name, adapter_name=name)
+            if unified_memory():
+                drop_file_cache(p)
             loaded[name] = ref.path
         names.append(name)
         weights.append(ref.weight)

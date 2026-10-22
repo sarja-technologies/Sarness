@@ -16,7 +16,7 @@
   import TextArea from '../ui/TextArea.svelte';
   import TextInput from '../ui/TextInput.svelte';
   import Toggle from '../ui/Toggle.svelte';
-  import { imageDims, type ImageSettings } from './params';
+  import { IMAGE_STYLES, editsReference, imageDims, type ImageSettings } from './params';
   import { randomSeed } from '../util/seed';
 
   /** Image-mode settings. Only options the selected model supports are shown. */
@@ -34,6 +34,8 @@
   const cfgRange = $derived(limits.guidance ?? [0, 20]);
   const schedulerOptions = $derived([{ value: 'default', label: 'Model default' }, ...(caps.schedulers ?? []).map((x: string) => ({ value: x, label: x.replace(/_/g, ' ') }))]);
   const loraModels = $derived(byCategory('lora', true, engine));
+  const edits = $derived(editsReference(model));
+  const extraSlots = $derived(Math.min(2, Math.max(0, (caps.references ?? 1) - 1)));
 </script>
 
 <div class="ctl">
@@ -58,11 +60,25 @@
   </div>
   <div class="dims faint tnum">{dims[0]} × {dims[1]} px · {s.steps} steps{s.batch_size > 1 ? ` · ${s.batch_size} images` : ''}</div>
 
-  {#if caps.modes?.includes('img2img') !== false}
-    <Field label="Reference image" hint={s.reference_image ? (s.mask_image ? 'Inpainting: only the masked area is regenerated.' : 'Image-to-image: lower strength keeps more of the reference.') : 'Optional. Paint a mask on it to inpaint.'}>
-      <ImageInput bind:fileId={s.reference_image} {engine} {files} onpaint={caps.modes?.includes('inpaint') !== false ? () => (maskOpen = true) : undefined} painted={!!s.mask_image} />
+  <Field label="Style" hint={s.style === 'iphone' ? 'Ordinary iPhone look: natural light and skin, everyday framing, no studio polish. Works with every model.' : ''}>
+    <Select bind:value={s.style} size="sm" options={IMAGE_STYLES} />
+  </Field>
+
+  {#if caps.modes?.includes('img2img') !== false || caps.modes?.includes('edit')}
+    <Field label={edits ? 'Image to edit' : 'Reference image'} hint={s.reference_image ? (s.mask_image ? 'Inpainting: only the masked area is regenerated.' : edits ? 'Describe the change in the prompt; the rest of the image is kept.' : 'Image-to-image: lower strength keeps more of the reference.') : edits && !caps.modes?.includes('txt2img') ? 'Required: this model edits an existing image.' : 'Optional. Paint a mask on it to inpaint.'}>
+      <ImageInput bind:fileId={s.reference_image} {engine} {files} onpaint={caps.modes?.includes('inpaint') ? () => (maskOpen = true) : undefined} painted={!!s.mask_image} />
     </Field>
-    {#if s.reference_image && caps.denoise !== false}
+    {#if s.reference_image && extraSlots > 0}
+      <Field label="More references" hint="Other images the edit can draw from, e.g. a person, product or outfit to bring in.">
+        <div class="refs">
+          {#each Array(Math.min(extraSlots, s.extra_references.length + 1)) as _, i (i)}
+            <ImageInput fileId={s.extra_references[i] ?? null} {engine} {files}
+              onchange={(id: string | null) => { if (id) s.extra_references[i] = id; else s.extra_references.splice(i, 1); }} />
+          {/each}
+        </div>
+      </Field>
+    {/if}
+    {#if s.reference_image && caps.denoise !== false && (!edits || s.mask_image)}
       <Slider bind:value={s.denoise} min={0.05} max={1} step={0.01} label="Strength" format={(v) => v.toFixed(2)} />
     {/if}
   {/if}
@@ -149,4 +165,5 @@
   .loras { display: flex; flex-direction: column; gap: 10px; }
   .lora { display: grid; grid-template-columns: 1fr auto; gap: 6px; align-items: center; padding: 8px; border-radius: var(--r-md); background: var(--bg-2); border: 1px solid var(--line-0); }
   .lw { grid-column: 1 / -1; }
+  .refs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 </style>

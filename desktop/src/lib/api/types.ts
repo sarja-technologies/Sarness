@@ -109,6 +109,10 @@ export interface ModelCapabilities {
   steps?: boolean;
   denoise?: boolean;
   flow_shift?: boolean;
+  /** Editing models: how many images an edit takes (the image to edit plus references). */
+  references?: number;
+  /** Video models that generate a soundtrack. */
+  audio?: boolean;
 }
 
 export interface InstalledModel {

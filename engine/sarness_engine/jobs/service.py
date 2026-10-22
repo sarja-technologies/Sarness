@@ -468,7 +468,10 @@ class JobService:
         job = self.get(job_id)
         if not job:
             return
-        if msg.get("oom") and self.settings.get("oom_retry_with_offload") and job["attempts"] < 1:
+        # On unified memory offloading is placed on the GPU (it would keep a second copy in the same RAM), so a
+        # retry would only repeat the failed run.
+        if (msg.get("oom") and self.settings.get("oom_retry_with_offload") and job["attempts"] < 1
+                and not any(g.get("unified_memory") for g in hardware.gpus())):
             graph = copy.deepcopy(job["workflow"])
             changed = False
             for n in graph.get("nodes", []):
@@ -487,12 +490,12 @@ class JobService:
         self._finish(job_id, "failed", error={"message": msg.get("message"), "node_id": msg.get("node_id"),
                                               "oom": bool(msg.get("oom")), "hint": msg.get("hint")})
 
-    def _on_worker_crash(self, job_id: str | None, message: str) -> None:
+    def _on_worker_crash(self, job_id: str | None, message: str, retry: bool = True) -> None:
         if not job_id:
             self.bus.publish("worker.crashed", {"message": message})
             return
         job = self.get(job_id)
-        if job and job["attempts"] + 1 < int(self.settings.get("job_max_attempts")):
+        if retry and job and job["attempts"] + 1 < int(self.settings.get("job_max_attempts")):
             self._live.pop(job_id, None)
             self.db.update("jobs", job_id, {"status": "queued", "attempts": job["attempts"] + 1, "progress": 0,
                                             "progress_text": "GPU worker crashed — retrying"})

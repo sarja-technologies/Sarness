@@ -317,10 +317,13 @@ class LlamaServer:
                 args += no_mmap_args(str(b))
             if mmproj:
                 args += ["--mmproj", mmproj]
-            mtp = (model.get("meta") or {}).get("mtp")
+            meta = model.get("meta") or {}
+            mtp = meta.get("mtp") or bool(meta.get("nextn_layers"))
             if mtp:
-                # Multi-token prediction: the model's own MTP head drafts tokens (no second model).
-                args += ["--spec-type", "draft-mtp", "-md", mtp, "--spec-draft-n-max", "3"]
+                # Multi-token prediction: the model's own MTP head drafts tokens (no second model). It ships either
+                # as a separate GGUF or inside the model file.
+                args += ["--spec-type", "draft-mtp", *(["-md", meta["mtp"]] if meta.get("mtp") else []),
+                         "--spec-draft-n-max", "3"]
             args += [str(a) for a in (model.get("llama_args") or [])]
             self.logs_dir.mkdir(parents=True, exist_ok=True)
             logf = open(self.logs_dir / "llama-server.log", "ab")

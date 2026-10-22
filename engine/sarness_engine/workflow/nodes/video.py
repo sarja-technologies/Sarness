@@ -19,7 +19,9 @@ VIDEO_MEMORY_MODES = [
     {"value": "sequential", "label": "Sequential (minimum VRAM, slowest)"},
 ]
 
-VIDEO_FAMILIES = ["wan", "wan22-ti2v", "ltx2", "minimaxh3", "gateway"]
+VIDEO_FAMILIES = ["wan", "wan22-ti2v", "ltx2", "minimaxh3", "hunyuanvideo15", "hunyuanvideo15-i2v", "gateway"]
+# Families whose pipeline encodes the prompt itself (the prompt node passes the text through).
+_TEXT_PROMPT_FAMILIES = {"ltx2", "hunyuanvideo15", "hunyuanvideo15-i2v"}
 WAN_NEGATIVE = ("blurry, low quality, worst quality, jpeg artifacts, static, still frame, overexposed, "
                 "distorted, deformed, extra limbs, fused fingers, messy background, watermark, subtitles, text")
 
@@ -51,9 +53,9 @@ def encode_video_prompt(ctx, inputs, params):
     import torch
 
     handle = inputs["model"]
-    if handle.family == "ltx2":  # encodes inside its pipeline (Gemma text encoder + connectors)
+    if handle.family in _TEXT_PROMPT_FAMILIES:  # encodes inside its pipeline (LLM text encoders)
         ctx.annotate(prompt=params["prompt"], negative_prompt=params["negative_prompt"])
-        return {"conditioning": {"family": "ltx2", "prompt": params["prompt"],
+        return {"conditioning": {"family": handle.family, "prompt": params["prompt"],
                                  "negative_prompt": params["negative_prompt"]}}
     if handle.family == "minimaxh3":  # encodes inside its pipeline; guidance-distilled, no negative prompt
         ctx.annotate(prompt=params["prompt"])
@@ -153,6 +155,8 @@ def video_sampler(ctx, inputs, params):
         return _ltx2_sample(ctx, handle, cond, start, w, h, frames, steps, seed, params)
     if handle.family == "minimaxh3":
         return _minimax_h3_sample(ctx, handle, cond, start, end, w, h, frames, steps, seed)
+    if handle.family in ("hunyuanvideo15", "hunyuanvideo15-i2v"):
+        return _hunyuan15_sample(ctx, handle, cond, start, w, h, frames, steps, seed, params)
 
     pipe = handle.pipe
     base_sched = pipe.__dict__.get("_sarness_default_scheduler") or pipe.scheduler
@@ -238,6 +242,60 @@ def _ltx2_sample(ctx, handle, cond, start, w, h, frames, steps, seed, params):
     ctx.annotate(seed=seed, steps=steps, guidance=float(params["guidance"]), width=w, height=h, frames=len(pil),
                  fps=fps, audio=sound is not None, mode="i2v" if start is not None else "t2v")
     return {"video": {"frames": pil, "fps": fps, "audio": sound}}
+
+
+def _frames_to_pil(video):
+    import numpy as np
+    import torch
+
+    arr = video.float().cpu().numpy() if isinstance(video, torch.Tensor) else np.asarray(video)
+    if arr.dtype != np.uint8:
+        arr = (np.clip(arr, 0, 1) * 255).round().astype(np.uint8)
+    return [Image.fromarray(f) for f in arr]
+
+
+def _hunyuan15_sample(ctx, handle, cond, start, w, h, frames, steps, seed, params):
+    """HunyuanVideo 1.5: separate text-to-video and image-to-video checkpoints. Guidance lives in the
+    pipeline's guider component rather than in the call; the image-to-video pipeline takes its aspect from
+    the start frame and its area from target_size (960, i.e. 720p, in the checkpoint), so the frame is cropped to
+    the requested size and target_size is set from the requested area."""
+    import torch
+
+    pipe = handle.pipe
+    guidance = float(params["guidance"])
+    pipe.guider.guidance_scale = guidance
+
+    kwargs: dict[str, Any] = dict(prompt=cond["prompt"], negative_prompt=cond.get("negative_prompt") or None,
+                                  num_frames=frames, num_inference_steps=steps,
+                                  generator=torch.Generator(device="cpu").manual_seed(seed), output_type="np")
+    if handle.family == "hunyuanvideo15-i2v":
+        kwargs["image"] = ImageOps.fit(start[0].convert("RGB"), (w, h), Image.LANCZOS)
+        pipe.target_size = max(16, round((w * h) ** 0.5 / 16) * 16)  # 848×480 → 640, 1280×720 → 960
+    else:
+        kwargs.update(height=h, width=w)
+    # These pipelines take no step callback, so progress and cancellation hook the scheduler's step instead.
+    sched = pipe.scheduler
+    step_fn = sched.step
+    done = [0]
+
+    def step(*a, **kw):
+        res = step_fn(*a, **kw)
+        done[0] += 1
+        ctx.progress(done[0], steps, f"Step {done[0]}/{steps}")
+        return res
+
+    ctx.progress(0, steps, "Sampling")
+    sched.step = step
+    try:
+        with torch.inference_mode():
+            out = pipe(**kwargs)
+    finally:
+        del sched.step
+    pil = _frames_to_pil(out.frames[0])
+    fps = float(params["fps"])
+    ctx.annotate(seed=seed, steps=steps, guidance=guidance, width=pil[0].width, height=pil[0].height,
+                 frames=len(pil), fps=fps, mode="i2v" if start is not None else "t2v")
+    return {"video": {"frames": pil, "fps": fps}}
 
 
 def _minimax_h3_sample(ctx, handle, cond, start, end, w, h, frames, steps, seed):

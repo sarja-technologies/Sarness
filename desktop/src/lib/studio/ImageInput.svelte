@@ -16,8 +16,15 @@
     /** Server to upload to (null = primary), and the map recording which server holds each file. */
     engine?: string | null;
     files?: Record<string, string>;
+    /** Called with the new file (or null when removed), for callers that keep the id in a list. */
+    onchange?: (id: string | null) => void;
   }
-  let { fileId = $bindable(), label = 'Reference image', hint = 'Drop an image or click to browse', accept = 'image/*', onpaint, painted = false, engine = null, files }: Props = $props();
+  let { fileId = $bindable(), label = 'Reference image', hint = 'Drop an image or click to browse', accept = 'image/*', onpaint, painted = false, engine = null, files, onchange }: Props = $props();
+
+  function set(id: string | null) {
+    fileId = id;
+    onchange?.(id);
+  }
   let uploading = $state(false);
   let over = $state(false);
   let input: HTMLInputElement;
@@ -28,7 +35,7 @@
     try {
       const r = await apiFor(engine).upload(f, f.name);
       if (files && engine) files[r.id] = engine;
-      fileId = r.id;
+      set(r.id);
     } catch (e) {
       toastError(e, 'Upload failed');
     } finally {
@@ -41,7 +48,7 @@
     over = false;
     const genId = e.dataTransfer?.getData('application/x-sarness-file');
     if (genId) {
-      fileId = genId;
+      set(genId);
       return;
     }
     upload(e.dataTransfer?.files?.[0]);
@@ -57,7 +64,7 @@
     <img src={mediaUrl(`/v1/files/${fileId}`, files?.[fileId] ?? engine)} alt="" />
     <div class="tools">
       {#if onpaint}<IconButton label={painted ? 'Edit mask' : 'Paint inpaint mask'} size="sm" active={painted} onclick={(e) => { e.stopPropagation(); onpaint(); }}><Brush /></IconButton>{/if}
-      <IconButton label="Remove" size="sm" onclick={(e) => { e.stopPropagation(); fileId = null; }}><X /></IconButton>
+      <IconButton label="Remove" size="sm" onclick={(e) => { e.stopPropagation(); set(null); }}><X /></IconButton>
     </div>
   {:else}
     <ImagePlus />

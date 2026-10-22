@@ -567,6 +567,16 @@
    ]
   },
   {
+   "op": "model.unload",
+   "method": "POST",
+   "route": "/v1/models/{model_id:path}/unload",
+   "handler": "api.models:unload_model",
+   "mode": "unary",
+   "params": [
+    "model_id"
+   ]
+  },
+  {
    "op": "model.catalog",
    "method": "GET",
    "route": "/v1/models/catalog",
