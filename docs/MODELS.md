@@ -132,11 +132,15 @@ tested on every model above (56 images in all) and gives deeper focus, phone-lik
 | LTX-2.3 | text to video | 576×1024 (9:16), 30 steps | — | 786 s | Same quality in portrait |
 | LTX-2.3 | image to video | 1024×576, 30 steps, Z-Image start frame | 109 s | 884 s | Start frame and identity kept; she looks up as a red bus pulls in, but keeps holding the phone instead of putting it away; stereo audio, all 121 frames |
 | HunyuanVideo 1.5 480p | text to video | 848×480, 50 steps, CFG 6 | 59 s | 4 332 s (87 s/step) | Coherent scene and motion, no audio |
+| HunyuanVideo 1.5 480p | image to video | 848×480, 50 steps, CFG 6, Z-Image start frame | 60 s | 3 069 s (61 s/step) | Start frame and identity kept; follows the whole prompt (looks up, bus pulls in behind her in the rain, phone put away); the bus display's text is garbled; 64 GB, no audio |
 
 HunyuanVideo 1.5 hides padded text tokens with a dense sequence × sequence mask, which rules out flash attention:
 at 848×480 (~50 k tokens) each step took ~150 s. The engine now attends over only the valid tokens (same result,
-checked against the masked kernel), which gives the 87 s/step above. 720p at 121 frames was not run (estimated
-2–3 h); 61-frame 720p and 9:16 runs are in the benchmark suite but were deferred.
+checked against the masked kernel): 61 s/step (the text-to-video run still carried an expensive mask check, since
+removed). The image-to-video pipeline takes no width or height and sizes its output from the start frame and the
+checkpoint's 720p `target_size`; the engine sets `target_size` from the requested area, so 848×480 stays 848×480
+(before, it silently ran at 1264×720 and ~270 s/step). 720p and 9:16 Hunyuan runs are in the benchmark suite but
+were deferred (1–3 h of GPU time each).
 
 **Low-refusal chat models** (llama.cpp, context 32 768; twelve prompts: two reasoning, coding checked by running the
 code, instruction following, knowledge, a 200-word story, six borderline requests that stock models often refuse;
