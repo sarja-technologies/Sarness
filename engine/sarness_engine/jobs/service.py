@@ -468,7 +468,10 @@ class JobService:
         job = self.get(job_id)
         if not job:
             return
-        if msg.get("oom") and self.settings.get("oom_retry_with_offload") and job["attempts"] < 1:
+        # On unified memory offloading is placed on the GPU (it would keep a second copy in the same RAM), so a
+        # retry would only repeat the failed run.
+        if (msg.get("oom") and self.settings.get("oom_retry_with_offload") and job["attempts"] < 1
+                and not any(g.get("unified_memory") for g in hardware.gpus())):
             graph = copy.deepcopy(job["workflow"])
             changed = False
             for n in graph.get("nodes", []):

@@ -603,6 +603,18 @@ def test_a_job_whose_worker_was_killed_for_memory_fails_instead_of_retrying(clie
         "running the same job again would only exhaust memory again"
 
 
+def test_an_out_of_memory_job_is_retried_with_offload_only_where_offloading_saves_memory(client, monkeypatch):
+    from sarness_engine import hardware
+
+    jobs = client.app.state.sarness.jobs
+    for unified, status in ((False, "queued"), (True, "failed")):
+        monkeypatch.setattr(hardware, "gpus", lambda: [{"name": "GPU", "unified_memory": unified, "vram_total_mb": 24576,
+                                                         "vram_free_mb": 24576, "vram_used_mb": 0}])
+        job_id = jobs.submit(kind="image", simple={"model": "image:my-sdxl", "prompt": "a"})["id"]
+        jobs._handle_failure(job_id, {"type": "failed", "message": "The GPU ran out of memory.", "oom": True})
+        assert client.get(f"/v1/jobs/{job_id}").json()["status"] == status, f"unified={unified}"
+
+
 def test_the_supervisor_stops_the_worker_before_the_machine_runs_out_of_memory(monkeypatch):
     import psutil
 
