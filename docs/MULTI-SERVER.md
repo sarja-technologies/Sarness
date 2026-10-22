@@ -74,6 +74,7 @@ Behaviour specific to unified memory:
   (which would land in the same RAM). Cached node outputs are cleared on every eviction, so a later job always reloads
   an evicted model instead of reusing its emptied handle.
 * **No offloading.** CPU offload keeps a second copy in the same RAM; any requested offload mode is placed on the GPU.
+  For the same reason a job that runs out of memory is not retried with offloading (as it is on discrete GPUs).
 * **Memory safety.** GPU allocations are in no process's RSS and are not charged to cgroups, so the kernel's OOM
   killer cannot see the culprit and kills desktop and system services first (this happened during testing on
   2026-10-22). Three layers prevent it: the worker caps PyTorch at what it holds plus what the system can spare
