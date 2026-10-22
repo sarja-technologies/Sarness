@@ -36,6 +36,8 @@ inference = [
   "ftfy",
   "imageio>=2.34",
   "imageio-ffmpeg",
+  # LTX-2 image-to-video re-compresses its start frame as H.264 (as in training) through PyAV
+  "av",
   "opencv-python-headless",
   "spandrel",
 ]
