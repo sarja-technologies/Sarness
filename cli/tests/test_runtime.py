@@ -9,8 +9,15 @@ from helpers import make_caps
 
 
 class Eng:
-    def __init__(self, **st):
+    def __init__(self, free_mb=None, **st):
         self.st = {"state": "stopped", "model_id": None, "ctx": 8192, "gpu_layers": 999, "active_streams": 0, "last_used": 0, **st}
+        self.free_mb = free_mb
+
+    def get_json(self, path):
+        if self.free_mb is None:
+            raise RuntimeError("no hardware info")
+        return {"hardware": {"gpus": [{"vram_total_mb": 124608, "vram_free_mb": self.free_mb,
+                                       "compute_processes": [{"pid": 4242, "used_mb": 46744}]}]}}
 
     def llm_status(self):
         return self.st
@@ -92,3 +99,23 @@ def test_user_output_limit_is_respected_and_thinking_allowance_is_added():
 def test_capability_wording_never_claims_what_it_does_not_know():
     caps = capabilities({**MODELS[0], "reasoning": None}, "s")
     assert caps.tool_calling.startswith("unverified") and caps.thinking_toggle.startswith("unknown")
+
+
+def test_load_that_would_not_fit_next_to_other_workloads_needs_consent():
+    big = {**MODELS[0], "vram_mb": 56000}                      # needs 56 GB + 14.9 GB headroom
+    with pytest.raises(ModelError, match="only 53 GB of 121 GB is free.*pid 4242"):
+        prepare_model(Eng(free_mb=55000), big, wanted_ctx=None, confirm_swap=lambda m: False)
+    with pytest.raises(ModelError, match="--allow-low-memory"):
+        prepare_model(Eng(free_mb=55000), big, wanted_ctx=None, confirm_swap=None)
+    assert prepare_model(Eng(free_mb=55000), big, wanted_ctx=None, confirm_swap=None, allow_low_memory=True).will_load
+    assert prepare_model(Eng(free_mb=55000), big, wanted_ctx=None, confirm_swap=lambda m: True).will_load
+    assert prepare_model(Eng(free_mb=90000), big, wanted_ctx=None, confirm_swap=None).will_load    # plenty of room: no prompt
+    assert prepare_model(Eng(), big, wanted_ctx=None, confirm_swap=None).will_load                 # no hardware info: never blocks
+
+
+def test_memory_freed_by_a_consented_swap_is_counted_and_a_loaded_model_needs_no_check():
+    big = {**MODELS[0], "vram_mb": 56000}
+    st = dict(state="ready", model_id="other", model_name="Other", last_used=time.time() - 600, vram_estimate_mb=30000)
+    assert prepare_model(Eng(free_mb=45000, **st), big, wanted_ctx=None, confirm_swap=lambda m: True).will_load   # 45 + 30 freed >= 71
+    loaded = Eng(free_mb=1000, state="ready", model_id="coder@Q4", ctx=16384)
+    assert not prepare_model(loaded, big, wanted_ctx=None, confirm_swap=None).will_load                           # already in memory

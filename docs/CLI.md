@@ -49,6 +49,8 @@ Bugs found *only* by live testing and fixed: (1) startup swap consent made the p
 treated as "deny" instead of aborting; (3) blocked runs did not print the independent summary; (4) stale `.pyc` after a same-size edit within one
 second (commands now run with `PYTHONDONTWRITEBYTECODE=1`).
 
+**Memory guard, live:** with the Spark's default model set to Qwen3 Coder Next (≈54 GB), `sarness run` refused to load it (67 GB free < 54 GB + 14 GB headroom, other process of 45 GB named) and the engine stayed `stopped`.
+
 ### Not verified, and why
 
 * **Large / reasoning-capable models** (Qwen3 Coder Next 80B-A3B, Qwen3.8 27B, GPT-OSS 120B, …): not loaded. During testing the Spark was running

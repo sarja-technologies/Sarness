@@ -41,6 +41,8 @@ def common_flags(p: argparse.ArgumentParser, suppress: bool) -> None:
     p.add_argument("--allow-insecure-http", action="store_true", default=d if suppress else False, help="Permit cleartext remote HTTP (token exposure risk)")
     p.add_argument("--allow-model-swap", action="store_true", default=d if suppress else False,
                    help="Allow loading a model over a different loaded one (it unloads for everyone)")
+    p.add_argument("--allow-low-memory", action="store_true", default=d if suppress else False,
+                   help="Load a model even if the engine host lacks free memory for it (can starve other workloads)")
     p.add_argument("--show-reasoning", action="store_true", default=d if suppress else False, help="Stream the model's reasoning text dimly")
     p.add_argument("--verbose", action="store_true", default=d if suppress else False, help="Show token usage and tool output")
 
@@ -144,6 +146,7 @@ def start_session(a: argparse.Namespace, prompt: str | None, resume_id: str | No
         if model.get("supported") is False:
             raise ConfigError(f"{model['name']} is not supported by this engine: {model.get('unsupported_reason')}")
         prepared = prepare_model(engine, model, wanted_ctx=settings.get("context_tokens"), allow_swap=getattr(a, "allow_model_swap", False),
+                                 allow_low_memory=getattr(a, "allow_low_memory", False),
                                  confirm_swap=lambda msg: console.confirm(msg + "\nLoad it anyway?") is not False)
     except (EngineError, ModelError) as exc:
         conn.close()

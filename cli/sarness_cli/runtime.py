@@ -42,8 +42,34 @@ class Prepared:
     replaces: str | None = None   # id of the loaded model the user agreed to replace (so the per-turn guard stays quiet about it)
 
 
+HEADROOM_FRACTION, HEADROOM_MIN_MB = 0.12, 8000
+
+
+def memory_warning(engine: Any, model: dict[str, Any], freed_mb: int = 0) -> str | None:
+    """None if the model fits with headroom, else why not. Uses the engine's own hardware figures (unified memory
+    on GB10 is shared with every other process on the host, which is how an unguarded load can starve them)."""
+    getter = getattr(engine, "get_json", None)
+    need = model.get("vram_mb")
+    if not getter or not need:
+        return None
+    try:
+        gpu = (getter("/v1/system")["hardware"]["gpus"] or [None])[0]
+    except Exception:  # noqa: BLE001 - an unreadable /v1/system must not block normal use
+        return None
+    if not gpu or gpu.get("vram_free_mb") is None:
+        return None
+    total, free = int(gpu["vram_total_mb"]), int(gpu["vram_free_mb"]) + freed_mb
+    headroom = max(HEADROOM_MIN_MB, int(total * HEADROOM_FRACTION))
+    if int(need) + headroom <= free:
+        return None
+    others = ", ".join(f"{p['used_mb'] // 1024} GB (pid {p['pid']})" for p in gpu.get("compute_processes", []) if p.get("used_mb", 0) > 1024)
+    return (f"Loading {model.get('name')} needs about {int(need) // 1024} GB plus {headroom // 1024} GB of safety headroom, but only "
+            f"{free // 1024} GB of {total // 1024} GB is free on the engine host" + (f" (other GPU processes: {others})" if others else "") +
+            ". Memory on this machine is shared, so an oversized load can starve or crash other workloads.")
+
+
 def prepare_model(engine: Any, model: dict[str, Any], *, wanted_ctx: int | None, confirm_swap: Callable[[str], bool] | None,
-                  allow_swap: bool = False) -> Prepared:
+                  allow_swap: bool = False, allow_low_memory: bool = False) -> Prepared:
     """Decide the context window and make sure using this model cannot evict someone else's.
 
     The engine reloads whenever the requested ctx/gpu_layers differ from the loaded ones - even for the
@@ -65,7 +91,9 @@ def prepare_model(engine: Any, model: dict[str, Any], *, wanted_ctx: int | None,
             notes.append(f"requested context {wanted_ctx} ignored: the model is already loaded with {ctx} and changing it would reload it for everyone")
         return Prepared(ctx, st.get("gpu_layers"), True, False, notes, False)
     ctx = min(int(wanted_ctx or default_ctx), cmax) if cmax else int(wanted_ctx or default_ctx)
+    freed = 0
     if state == "ready" and loaded:
+        freed = int(st.get("vram_estimate_mb") or 0)
         idle = time.time() - float(st.get("last_used") or 0)
         if int(st.get("active_streams") or 0) > 0:
             raise ModelError(f"{st.get('model_name') or loaded} is generating a response for another client right now. "
@@ -75,9 +103,15 @@ def prepare_model(engine: Any, model: dict[str, Any], *, wanted_ctx: int | None,
         if not (allow_swap or (confirm_swap and confirm_swap(msg))):
             raise ModelError(msg + " Cancelled. Re-run with --allow-model-swap to permit this, or choose the loaded model.")
         notes.append("model swap approved: " + msg)
+        warn = memory_warning(engine, model, freed)
+        if warn and not (allow_low_memory or (confirm_swap and confirm_swap(warn))):
+            raise ModelError(warn + " Cancelled. Choose a smaller model, or pass --allow-low-memory to override.")
         return Prepared(ctx, None, True, False, notes, True, replaces=loaded)
     elif state in {"loading"}:
         notes.append("the engine is loading a model right now; the request will wait for it")
+    warn = memory_warning(engine, model, freed)
+    if warn and not (allow_low_memory or (confirm_swap and confirm_swap(warn))):
+        raise ModelError(warn + " Cancelled. Choose a smaller model, or pass --allow-low-memory to override.")
     return Prepared(ctx, None, True, False, notes, True)
 
 

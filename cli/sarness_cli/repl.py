@@ -203,6 +203,7 @@ class Repl:
             c.err("Already using " + model["ref"])
             return
         prepared = prepare_model(engine.conn.engine, model, wanted_ctx=self.settings.get("context_tokens"),
+                                 allow_low_memory=False,
                                  confirm_swap=lambda msg: c.confirm(msg + "\nSwitch anyway?") is not False)
         old = self.cfg.model
         engine.replaces = prepared.replaces

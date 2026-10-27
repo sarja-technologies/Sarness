@@ -83,6 +83,7 @@ previous one. Sarness therefore:
 
 * sends the **loaded** model's exact `ctx`/`gpu_layers` with every request, so using an already-loaded model never reloads it;
 * if a *different* model is loaded, **asks before unloading it** (`--allow-model-swap` for scripts) and refuses outright while it is generating for someone else;
+* checks free memory before any load (the model's estimated size + max(8 GB, 12 % of memory) must fit in what the engine host reports free, counting other GPU processes); if not, it asks (`--allow-low-memory` for scripts) rather than starving other workloads;
 * re-checks the engine before **every turn**: if another client switched the model meanwhile, it pauses instead of evicting theirs.
 
 ## Effort and thinking — what is real
