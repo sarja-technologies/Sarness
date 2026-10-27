@@ -15,6 +15,7 @@ powered by your own GPU server.
 desktop/   Tauri app (src/ = Svelte UI, src-tauri/ = Rust core: proxy, tunnels, keyring, installer)
 engine/    Sarness Engine (sarness_engine/ package, tests/)
 scripts/   install-engine.sh (server), setup-dev.sh, dev.sh, test.sh, build.sh, package-engine.sh
+cli/       Sarness CLI: terminal coding agent (see cli/README.md, docs/CLI.md)
 docs/      ARCHITECTURE.md · API.md · WORKFLOW_FORMAT.md · DEPLOYMENT.md · MODELS.md · DEVELOPMENT.md · EXPERIMENTS.md
 dist/      build output (.deb, .rpm, .AppImage, engine bundle, SHA256SUMS)
 ```

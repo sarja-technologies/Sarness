@@ -15,3 +15,6 @@ scratch_pip.log
 *.sarness-token
 .env
 .env.*
+cli/.venv/
+cli/.pytest_cache/
+cli/build/

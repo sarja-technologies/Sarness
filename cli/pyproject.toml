@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sarness-cli"
+version = "0.2.0"
+description = "Terminal coding agent for Sarness Engine"
+requires-python = ">=3.11"
+dependencies = ["prompt_toolkit>=3.0.40"]
+
+[project.scripts]
+sarness = "sarness_cli.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["sarness_cli*"]
+
+[project.optional-dependencies]
+keyring = ["secretstorage>=3.3"]
+dev = ["pytest>=8"]
